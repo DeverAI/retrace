@@ -1,0 +1,16 @@
+# 运行时产物
+__pycache__/
+*.pyc
+retrace.db
+retrace.db-*
+Err.log
+
+# 含密钥，不入库
+config.json
+
+# 备份与日志
+backups/
+*.log
+
+# 工具
+.opencode/

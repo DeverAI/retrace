@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>ReTrace 观察插件</title>
+<style>
+  body { width: 320px; font-family: monospace; font-size: 12px; }
+  h1 { font-size: 14px; }
+  input, button { width: 100%; margin: 4px 0; box-sizing: border-box; }
+  #status { color: #666; }
+  .ok { color: #080; }
+  .err { color: #c00; }
+</style>
+</head>
+<body>
+  <h1>ReTrace 观察插件</h1>
+  <label>中枢端口 <input id="port" type="number" value="8765"></label>
+  <small>端口需与后端 config.json → browser.ws_port 一致（默认 8765）。</small>
+  <label>中枢 Token <input id="token" type="text"
+      placeholder="粘贴 config.json → browser.token（后端始终校验，留空将被拒）"></label>
+  <button id="save">保存并重连</button>
+  <p id="status">状态：未连接</p>
+  <button id="snap">当前页面快照</button>
+  <button id="observe">开启 DOM 观察</button>
+  <button id="unobserve">关闭 DOM 观察</button>
+  <hr>
+  <strong>Canvas API 缓解（当前顶级站点）</strong>
+  <p>默认关闭；按站点加入允许列表。对 2D Canvas 读取施加确定性按站点噪声
+    （不覆盖 WebGL、Audio、字体等指纹面；同站点稳定、跨站点不同）。</p>
+  <label>启用/停用原因（≥12 字，与后端审计一致）
+    <input id="canvasReason" type="text" placeholder="例如：防止第三方 iframe 跨站关联本站点指纹"></label>
+  <button id="canvasOn">为当前站点启用</button>
+  <button id="canvasOff">为当前站点停用并刷新</button>
+  <p id="canvasStatus"></p>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReTrace 控制台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="nav">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">RT</div>
+      <div class="brand-text">
+        <span class="brand-name">ReTrace</span>
+        <span class="brand-sub">漏洞分析控制台</span>
+      </div>
+    </div>
+    <nav id="navlinks" aria-label="主导航"></nav>
+    <div class="nav-foot">
+      <span class="dot" id="liveDot"></span>
+      <span id="liveText">连接中…</span>
+    </div>
+  </aside>
+  <main id="main">
+    <div id="views"></div>
+  </main>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

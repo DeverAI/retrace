@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "ReTrace 浏览器观察插件",
+  "version": "0.2.0",
+  "description": "ReTrace 安全观察扩展：DOM 观察、页面快照与按站点 Canvas API 隐私缓解",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "webNavigation",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ReTrace 观察插件"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
