@@ -8,7 +8,8 @@
     "scripting",
     "storage",
     "webNavigation",
-    "alarms"
+    "alarms",
+    "browsingData"
   ],
   "host_permissions": [
     "<all_urls>"

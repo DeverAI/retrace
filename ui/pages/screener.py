@@ -76,7 +76,7 @@ class ScreenerPage(QWidget):
                                     " AI 指导：带强制【已检查】安全自检，绝不自动执行。"))
         lay.addWidget(c2)
 
-        # ---- ②½ 深潜扫描（Prefetch / 使用历史 / WER） ----
+        # ---- ②½ 深潜扫描（Prefetch / 使用历史 / WER / AI 痕迹 / 再生监测） ----
         cdeep = _card("②½ 深潜扫描（卸载后仍残留的隐藏痕迹，需软件关键词）")
         self.deep_kw = QLineEdit(); self.deep_kw.setPlaceholderText("软件关键词（如 Qoder）")
         cdeep.layout().addLayout(_form_row(("关键词", self.deep_kw)))
@@ -84,9 +84,19 @@ class ScreenerPage(QWidget):
             _btn("Prefetch 执行痕迹", lambda: self._scan_kw(_mod("screener", "scan_prefetch_traces")), primary=True),
             _btn("注册表使用历史", lambda: self._scan_kw(_mod("screener", "scan_usage_history"))),
             _btn("WER 崩溃报告", lambda: self._scan_kw(_mod("screener", "scan_wer_traces"))),
+            _btn("AI 工具痕迹", lambda: self._scan_kw(_mod("screener", "scan_ai_tool_traces"))),
+        ))
+        cdeep.layout().addLayout(_toolbar(
+            _btn("指纹再生监测（对比上次基线）",
+                 lambda: self._scan(_mod("screener", "fingerprint_drift_report")), primary=True),
+            _btn("记录当前为基线",
+                 lambda: self._scan(_mod("screener", "fingerprint_drift_report"),
+                                    "", True)),
         ))
         cdeep.layout().addWidget(_hint("Prefetch：程序每次运行的 .pf 执行痕迹；使用历史：MuiCache + UserAssist（ROT13）"
-                                       " + AppCompat + BAM 系统级执行时间戳；WER：崩溃报告残留。卸载后仍保留。"))
+                                       " + AppCompat + BAM 系统级执行时间戳；WER：崩溃报告残留。卸载后仍保留。"
+                                       "AI 痕迹：Claude Code/Codex/Gemini CLI 等身份产物（密钥仅显示哈希预览）。"
+                                       "再生监测：清理后复查是否被软件原样复活（recreated_same_value = 有云端恢复，本地清理无效）。"))
         lay.addWidget(cdeep)
 
         # ---- ③ 留样扫描与批量清理（独立大卡） ----

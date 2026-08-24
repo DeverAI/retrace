@@ -14,7 +14,7 @@ ReTrace 是一个以 Windows 为目标的软件漏洞查找分析反向工具，
 | M1 | pcap | 基于本机 Wireshark（tshark/dumpcap）抓包与离线解析 |
 | M2 | regscan | 注册表搜索 + 自启动/COM/服务等漏洞常驻点位专项检查 |
 | M3 | embedding | 轻量词频-哈希向量 + 余弦相似度经验库检索（可选 AI embedding） |
-| M4 | browser | Chrome/Edge Manifest V3 扩展 + WebSocket 中枢（DOM 观察/Canvas 缓解） |
+| M4 | browser | Chrome/Edge Manifest V3 扩展 + WebSocket 中枢（DOM 观察；按站点指纹缓解：2D Canvas / 文字度量 / WebGL / AudioContext 确定性噪声；本站痕迹一键清除） |
 | M5 | evolve | 从观察库/经验库挖掘规则、调整观察权重、输出进化报告 |
 | M6 | decompile | Python / PE / Java .class 三类反编译 + 危险 API 预筛 + LLM 语义审计 |
 | M7 | watcher | 选定 APP 集中观察（进程树/网络/DNS/文件/注册表时间线） |
@@ -96,7 +96,14 @@ python -m unittest discover -s tests -v   # 运行回归测试套件（35 例）
    - **机器指纹文件扫描**：已知模式库（Qoder/Cursor/Windsurf/Chrome/Edge/VSCode 等的 machineid、
      DIPS、Client ID、auth token）+ 未知指纹内容检测（文件名关键词 + UUID/长十六进制内容判定）。
    - **深潜扫描**（软件卸载后仍残留的隐藏痕迹）：Prefetch 执行痕迹（.pf 文件）、注册表使用历史
-     （MuiCache / UserAssist ROT13 / AppCompat / BAM 系统级执行时间戳）、WER 崩溃报告残留。
+    （MuiCache / UserAssist ROT13 / AppCompat / BAM 系统级执行时间戳）、WER 崩溃报告残留、
+    **AI 工具痕迹**（Claude Code / Codex CLI / Gemini CLI / Aider / Continue 的配置与身份产物；
+    身份字段仅显示形状判定 + SHA-256 哈希预览，绝不回显明文密钥）。
+   - **指纹再生监测**：`fingerprint_drift_report` 对全部指纹/AI 产物做快照对比。清理后复查时，
+     若出现 `recreated_same_value`（文件被删后以相同内容复活），说明软件具备云端/备份恢复
+     机制——本地清理无效的铁证，需转向账号侧注销或沙箱隔离。
+   - **沙箱对照实验**：`privacy_guard.build_sandbox_test_plan` 生成可直接保存的 .wsb 配置 +
+     六步操作清单（宿主基线 → guest 安装运行 → guest 内复扫 → 删除再生探针 → 闭环确认）。
    - **指纹编码逆向**：`analyze_fingerprint_format` 逆向 SQLite/JSON/DPAPI/UUID/hex 等常见编码，
      输出创建规则与改写指导；`generate_trusted_fingerprint` 生成符合规则的替换值预览（只读），
      避免改写后因格式不合被软件判不信任而重新制造指纹。

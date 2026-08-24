@@ -10,6 +10,9 @@
 按职责拆分为子模块；本入口平面再导出全部公共 API，
 调用方（GUI 动态 getattr / Web 字符串路由 / Agent 工具）无需感知包结构。
 """
+from modules.screener.ai_tools import (
+    AI_TOOL_PATTERNS,  # noqa: F401 (对外兼容)
+    scan_ai_tool_traces)
 from modules.screener.apps import (
     check_file, scan_fingerprints, scan_leftover, scan_suspicious_apps,
     track_app)
@@ -19,6 +22,8 @@ from modules.screener.common import (  # noqa: F401 (_is_protected_fs_path/json_
     SUSPICIOUS_NAMES, _is_protected_fs_path, json_d, mark_item)
 from modules.screener.deep_scan import (
     scan_prefetch_traces, scan_usage_history, scan_wer_traces)
+from modules.screener.drift import (
+    classify_paths, fingerprint_drift_report)
 from modules.screener.fmt_reverse import (
     analyze_fingerprint_format, generate_trusted_fingerprint)
 from modules.screener.guidance import analyze_with_ai, fingerprint_guidance

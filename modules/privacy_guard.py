@@ -288,6 +288,47 @@ def sandbox_preview(exe_path, network=False, clipboard=False, memory_mb=4096):
                             memory_mb)
 
 
+def build_sandbox_test_plan(exe_path, network=False, memory_mb=4096):
+    """生成"沙箱指纹对照实验"的完整材料：可直接保存的 .wsb + 分步操作清单。
+
+    目的：验证目标 APP 在隔离环境中会留下哪些身份产物、宿主清理后是否会再生。
+    纯只读规划函数，不执行任何操作；运行沙箱由用户手动双击 .wsb 完成。
+    """
+    preview = _sandbox_preview(exe_path, _strict_bool(network), False,
+                               memory_mb)
+    exe_name = os.path.basename(preview["exe_path"])
+    checklist = [
+        {"step": 1, "phase": "host_baseline",
+         "action": "在宿主记录基线：运行 screener.scan_machine_fingerprints 与 "
+                   "scan_ai_tool_traces，再调用 screener.fingerprint_drift_report(commit=True)。",
+         "why": "没有宿主基线就无法判定哪些痕迹是本实验新产生的"},
+        {"step": 2, "phase": "guest_setup",
+         "action": "把下方 wsb_xml 保存为 test.wsb 并双击启动 Windows Sandbox"
+                   "（需专业版；首次启动约 1-3 分钟）。",
+         "why": "guest 内的所有写入在关闭时销毁，宿主零污染"},
+        {"step": 3, "phase": "guest_run",
+         "action": "在沙箱内安装并运行 %s，正常使用 5-10 分钟（登录/联网按实验目的决定，"
+                   "network=%s）。" % (exe_name, preview["network"]),
+         "why": "部分身份产物只在首次登录/激活后才写出"},
+        {"step": 4, "phase": "guest_scan",
+         "action": "在 guest 内用同一份 ReTrace 源码目录运行 "
+                   "python -c \"from modules.screener import scan_machine_fingerprints, scan_ai_tool_traces; print(scan_ai_tool_traces()['summary'], scan_machine_fingerprints()['summary'])\" "
+                   "并导出 JSON 结果到 C:\\ReTraceSource\\..\\guest_result.json（映射目录可带出）。",
+         "why": "对照 guest 命中清单与宿主基线，识别 APP 的全部身份写入点"},
+        {"step": 5, "phase": "regen_probe",
+         "action": "在 guest 内删除命中的指纹文件 → 重启 APP → 再次扫描。"
+                   "若文件以相同内容回来 = 存在云端恢复机制（本地清理无效的铁证）。",
+         "why": "这正是 fingerprint_drift_report 的 recreated_same_value 信号的手工验证版"},
+        {"step": 6, "phase": "teardown",
+         "action": "关闭沙箱（全部丢弃）→ 宿主再次运行 fingerprint_drift_report() 确认无新增漂移。",
+         "why": "闭环验证实验本身没有向宿主引入新痕迹"},
+    ]
+    return {"ok": True, "exe_path": preview["exe_path"],
+            "network": preview["network"], "memory_mb": preview["memory_mb"],
+            "wsb_xml": preview["xml"], "checklist": checklist,
+            "mode": preview["mode"], "limitations": preview["limitations"]}
+
+
 def _require_reason(reason):
     text = str(reason or "").strip()
     if len(text) < 12 or len(text) > 1000:

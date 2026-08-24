@@ -58,6 +58,8 @@ ALLOWED = {
     "screener.scan_prefetch_traces", "screener.scan_usage_history",
     "screener.scan_wer_traces", "screener.analyze_fingerprint_format",
     "screener.generate_trusted_fingerprint", "screener.fingerprint_guidance",
+    "screener.scan_ai_tool_traces", "screener.fingerprint_drift_report",
+    "privacy_guard.build_sandbox_test_plan",
     # privacy_guard
     "privacy_guard.capabilities", "privacy_guard.protected_rules",
     "privacy_guard.task_report", "privacy_guard.sandbox_preview",

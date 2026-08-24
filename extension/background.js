@@ -68,6 +68,27 @@ async function setCanvasGuardSite(site, enabled, reason) {
            protection: "best_effort_document_start" };
 }
 
+// 本站痕迹清除：cookies/cache/localStorage/IndexedDB/ServiceWorker，仅限单一 origin。
+// 属本地浏览器操作；仍上报 privacy_event 进入后端审计链（与 guard 开关同级）。
+async function clearSiteTraces(site, reason) {
+  site = normalizeSite(site);
+  if (!site || !/^https?:/.test(site)) throw new Error("需要有效的 HTTP(S) 站点 origin");
+  if (!chrome.browsingData || !chrome.browsingData.remove) {
+    throw new Error("浏览器不支持 browsingData API");
+  }
+  await chrome.browsingData.remove(
+    { origins: [site] },
+    { cookies: true, cache: true, localStorage: true,
+      indexedDB: true, serviceWorkers: true, cacheStorage: true }
+  );
+  send({ type: "privacy_event", event: {
+    type: "site_traces_cleared", topSite: site,
+    reason: String(reason || "用户在扩展中显式清除"), confidence: "exact_extension_setting"
+  }});
+  return { ok: true, site, cleared: ["cookies", "cache", "localStorage",
+                                     "indexedDB", "serviceWorkers", "cacheStorage"] };
+}
+
 async function loadToken() {
   const got = await chrome.storage.local.get(["rt_token", "rt_port"]);
   token = got.rt_token || "";
@@ -169,6 +190,9 @@ async function handleCommand(msg) {
         break;
       case "canvas_guard":
         await setCanvasGuardSite(msg.site || "", !!msg.enabled, msg.reason || "");
+        break;
+      case "clear_site_traces":
+        await clearSiteTraces(msg.site || "", msg.reason || "中枢指令清除");
         break;
       case "ping":
         send({ type: "hello", client: "retrace-ext", pong: true });
@@ -297,7 +321,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.__rtPrivacyFromPage) {
     const raw = msg.__rtPrivacyFromPage || {};
-    const api = ["getImageData", "toDataURL", "toBlob"].includes(raw.api) ? raw.api : "unknown";
+    // 与 canvas_guard.js 注入端 notify() 的 API 面保持一致：
+    const KNOWN_APIS = new Set([
+      "getImageData", "toDataURL", "toBlob", "measureText",
+      "webgl.getParameter", "webgl.getSupportedExtensions", "webgl.readPixels",
+      "webgl2.getParameter", "webgl2.getSupportedExtensions", "webgl2.readPixels",
+      "getFloatFrequencyData", "getByteFrequencyData",
+      "getFloatTimeDomainData", "getByteTimeDomainData"
+    ]);
+    const api = KNOWN_APIS.has(raw.api) ? raw.api : "unknown";
     const tabId = sender.tab ? sender.tab.id : 0;
     const frameId = Number(sender.frameId || 0);
     const rateKey = `${tabId}:${frameId}:${api}`;
@@ -320,6 +352,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.__rtSetCanvasSite) {
     setCanvasGuardSite(msg.site, !!msg.enabled,
       msg.reason || "用户在扩展面板显式启用当前顶级站点")
+      .then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg && msg.__rtClearSite) {
+    clearSiteTraces(msg.site, msg.reason || "用户在扩展面板清除本站痕迹")
       .then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true;
   }

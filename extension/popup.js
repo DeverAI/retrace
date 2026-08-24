@@ -132,3 +132,21 @@ async function setCanvas(on) {
 
 document.getElementById("canvasOn").addEventListener("click", () => setCanvas(true));
 document.getElementById("canvasOff").addEventListener("click", () => setCanvas(false));
+
+document.getElementById("clearSite").addEventListener("click", async () => {
+  const out = document.getElementById("clearStatus");
+  const site = await currentSite();
+  if (!site || !/^https?:/.test(site)) {
+    out.textContent = "当前页面不是可清除的 HTTP(S) 站点"; return;
+  }
+  const reason = (document.getElementById("canvasReason").value || "").trim();
+  if (reason.length < 12) {
+    out.textContent = "请先填写至少 12 字的清除原因（目的、对象、必要性）"; return;
+  }
+  const result = await chrome.runtime.sendMessage({
+    __rtClearSite: true, site, reason
+  });
+  out.textContent = result && result.ok
+    ? `${site}：痕迹已清除（cookies/cache/存储/SW），原因已上报审计`
+    : `清除失败：${result && result.error}`;
+});
