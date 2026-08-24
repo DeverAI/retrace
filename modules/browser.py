@@ -34,7 +34,7 @@ import struct
 import threading
 import time
 
-from core import config, events, logger
+from core import config, db, events, logger
 
 MAX_MSG = 1024 * 1024
 _STATE_LOCK = threading.Lock()
@@ -55,14 +55,9 @@ def _gen_token():
     t = (sec.get("token") or "").strip()
     if not t:
         t = secrets.token_hex(16)
-        # 写回 config.json，保证跨重启扩展仍能连接
-        cfg = config.get()
-        if not isinstance(cfg.get("browser"), dict):
-            cfg["browser"] = {}
-        cfg["browser"]["token"] = t
-        config.save()
+        # 写回 config.json，保证跨重启扩展仍能连接（统一入口，锁内合并）
+        config.update_section("browser", {"token": t})
         try:
-            from core import db
             db.audit("browser.token_rotate", "generated")
         except Exception:
             pass
@@ -312,7 +307,6 @@ def _dispatch(conn, data):
                   "confidence": "exact_extension_setting"}
             # 扩展 popup 路径同样进入审计链（与 Web/GUI 的 set_canvas_guard 并列）
             try:
-                from core import db
                 db.audit("browser.canvas_guard", "site=%s enabled=%s reason=%s" % (
                     ev["topSite"], ev["enabled"], ev["reason"][:120]))
             except Exception:
@@ -410,7 +404,6 @@ def send_command(cmd, **kwargs):
     if cmd not in {"list_tabs", "snapshot", "activate", "observe_dom", "ping", "canvas_guard"}:
         raise PermissionError("浏览器命令不在强类型白名单: %s" % cmd)
     try:
-        from core import db
         db.audit("browser.command", "cmd=%s" % str(cmd)[:200])
     except Exception:
         pass

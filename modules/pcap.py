@@ -18,7 +18,7 @@ import subprocess
 import threading
 import time
 
-from core import config, events, logger
+from core import config, db, events, logger
 
 TSHARK_CANDIDATES = [
     r"C:\Program Files\Wireshark\tshark.exe",
@@ -335,7 +335,6 @@ def start_capture(name="main", interface=None, bpf=None):
             cap.bpf = bpf
     ok = cap.start()
     try:
-        from core import db
         db.audit("pcap.start", "name=%s ok=%s" % (name, ok))
     except Exception:
         pass
@@ -348,7 +347,6 @@ def stop_capture(name="main"):
     if cap:
         cap.stop()
         try:
-            from core import db
             db.audit("pcap.stop", "name=%s" % name)
         except Exception:
             pass

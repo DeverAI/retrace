@@ -20,7 +20,7 @@ import subprocess
 import threading
 import time
 
-from core import config, events, logger
+from core import config, db, events, logger
 from modules import regscan
 
 SUB_FLAGS = 0
@@ -411,7 +411,6 @@ def get_watcher():
 def add_target(name, pid=None, exe=None):
     r = get_watcher().add_target(name, pid, exe)
     try:
-        from core import db
         ok = bool(isinstance(r, (tuple, list)) and r[0])
         db.audit("watcher.add", "name=%s ok=%s" % (name, ok))
     except Exception:
@@ -425,7 +424,6 @@ def remove_target(name):
 
 def start():
     try:
-        from core import db
         db.audit("watcher.start", "all")
     except Exception:
         pass
@@ -434,7 +432,6 @@ def start():
 
 def stop():
     try:
-        from core import db
         db.audit("watcher.stop", "all")
     except Exception:
         pass

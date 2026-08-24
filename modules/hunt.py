@@ -13,10 +13,11 @@
 """
 import json
 import os
+import re
 import time
 
 from core import config, db, events, logger
-from modules import decompile, embedding, pcap, regscan, watcher
+from modules import ai, decompile, embedding, pcap, regscan, watcher
 
 
 def create_agent(name="", path="", kind=""):
@@ -107,7 +108,6 @@ def collect_evidence(obs_id):
 
 
 def analyze_with_ai(obs_id):
-    from modules import ai
     obs = db.get_observation(obs_id)
     if not obs:
         return {"ok": False, "error": "观察不存在"}
@@ -142,7 +142,6 @@ def finish_observation(obs_id, risk="低", category="其他", mark="", conclusio
 
 
 def _keywords(text):
-    import re
     return re.findall(r"[A-Za-z0-9_.:\\-]{3,}", text or "")[:6]
 
 

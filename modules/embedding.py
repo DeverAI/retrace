@@ -16,6 +16,7 @@ import math
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -24,6 +25,7 @@ from core import config, logger
 INDEX_FILE = os.path.join(config.ROOT, "embedding_index.json")
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", re.U)
+CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 STOP = set("the a an of and or to in on for with is are was be by at as it this "
            "that from i you we they he she them they it's not no yes ok".split())
 
@@ -34,7 +36,7 @@ def _tokens(text):
     text = text.lower()
     out = []
     for t in TOKEN_RE.findall(text):
-        if len(t) < 2 and not re.match(r"[\u4e00-\u9fff]", t):
+        if len(t) < 2 and not CJK_RE.match(t):
             continue
         if t in STOP:
             continue
@@ -49,36 +51,44 @@ def _hash_token(tok, dim):
     return h % dim
 
 
-class LocalIndex:
+def cosine(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _local_vec(text, dim):
+    vec = [0.0] * dim
+    for tok in _tokens(text):
+        vec[_hash_token(tok, dim)] += 1.0
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm > 0:
+        vec = [v / norm for v in vec]
+    return vec
+
+
+class BaseIndex:
+    """共享的文档存取/检索骨架，向量生成由子类提供。"""
+
     def __init__(self, dim=256):
         self.dim = dim
         self.docs = []
 
-    def embed(self, text):
-        vec = [0.0] * self.dim
-        for tok in _tokens(text):
-            vec[_hash_token(tok, self.dim)] += 1.0
-        norm = math.sqrt(sum(v * v for v in vec))
-        if norm > 0:
-            vec = [v / norm for v in vec]
-        return vec
+    def embed(self, text):  # pragma: no cover - 子类必须实现
+        raise NotImplementedError
 
     def add(self, text, meta=None):
         vec = self.embed(text)
+        if vec is None:
+            return None
         self.docs.append({"text": text, "vec": vec, "meta": meta or {}})
         return len(self.docs) - 1
 
-    def _cosine(self, a, b):
-        s = 0.0
-        for x, y in zip(a, b):
-            s += x * y
-        return s
-
     def search(self, query, top_k=5, min_score=0.0):
         qv = self.embed(query)
+        if qv is None:
+            return None
         scored = []
         for i, doc in enumerate(self.docs):
-            s = self._cosine(qv, doc["vec"])
+            s = cosine(qv, doc["vec"])
             if s >= min_score:
                 scored.append({"idx": i, "score": round(s, 4),
                                "text": doc["text"], "meta": doc["meta"]})
@@ -92,7 +102,7 @@ class LocalIndex:
         return {"dim": self.dim,
                 "docs": [{"text": d["text"], "meta": d["meta"]} for d in self.docs]}
 
-    def load(self, data):
+    def _load_docs(self, data, embed_fn):
         try:
             self.dim = max(1, int(data.get("dim", self.dim) or self.dim))
         except (TypeError, ValueError):
@@ -107,14 +117,20 @@ class LocalIndex:
             meta = d.get("meta")
             if not isinstance(meta, dict):
                 meta = {}
-            self.docs.append({"text": text, "vec": self.embed(text), "meta": meta})
+            vec = embed_fn(text)
+            if vec is not None:
+                self.docs.append({"text": text, "vec": vec, "meta": meta})
 
 
-class OpenAIEmbed:
-    def __init__(self, dim=256):
-        self.dim = dim
-        self.docs = []
+class LocalIndex(BaseIndex):
+    def embed(self, text):
+        return _local_vec(text, self.dim)
 
+    def load(self, data):
+        self._load_docs(data, lambda t: _local_vec(t, self.dim))
+
+
+class OpenAIEmbed(BaseIndex):
     def _call(self, texts):
         sec = config.section("ai")
         base = (sec.get("base_url") or "").rstrip("/")
@@ -147,57 +163,9 @@ class OpenAIEmbed:
         vec = vecs[0]
         return vec[:self.dim] or None
 
-    def add(self, text, meta=None):
-        vec = self.embed(text)
-        if vec is None:
-            return None
-        self.docs.append({"text": text, "vec": vec, "meta": meta or {}})
-        return len(self.docs) - 1
-
-    def _cosine(self, a, b):
-        s = 0.0
-        for x, y in zip(a, b):
-            s += x * y
-        return s
-
-    def search(self, query, top_k=5, min_score=0.0):
-        qv = self.embed(query)
-        if qv is None:
-            return None
-        scored = []
-        for i, doc in enumerate(self.docs):
-            s = self._cosine(qv, doc["vec"])
-            if s >= min_score:
-                scored.append({"idx": i, "score": round(s, 4),
-                               "text": doc["text"], "meta": doc["meta"]})
-        scored.sort(key=lambda x: -x["score"])
-        return scored[:top_k]
-
-    def size(self):
-        return len(self.docs)
-
-    def dump(self):
-        return {"dim": self.dim,
-                "docs": [{"text": d["text"], "meta": d["meta"]} for d in self.docs]}
-
     def load(self, data):
-        try:
-            self.dim = max(1, int(data.get("dim", self.dim) or self.dim))
-        except (TypeError, ValueError):
-            self.dim = max(1, self.dim)
-        self.docs = []
-        for d in (data.get("docs") or []):
-            if not isinstance(d, dict):
-                continue
-            text = d.get("text")
-            if not isinstance(text, str):
-                continue  # 非字符串文本跳过，避免 _tokens(text).lower() 崩溃致半载状态
-            meta = d.get("meta")
-            if not isinstance(meta, dict):
-                meta = {}
-            vec = self.embed(text)
-            if vec is not None:
-                self.docs.append({"text": text, "vec": vec, "meta": meta})
+        # 载入即重新向量化：API 维度可能与本地不同，且离线时跳过坏条目
+        self._load_docs(data, self.embed)
 
 
 _index = None
@@ -225,7 +193,7 @@ def embed(text):
     idx = get_index()
     if isinstance(idx, OpenAIEmbed):
         vec = idx.embed(text)
-        return vec if vec is not None else LocalIndex().embed(text)
+        return vec if vec is not None else _local_vec(text, 256)
     return idx.embed(text)
 
 
@@ -237,15 +205,8 @@ def remember(text, meta=None):
         pass
     idx = get_index()
     meta = dict(meta or {})
-    meta.setdefault("at", __import__("time").strftime("%Y-%m-%d %H:%M:%S"))
-    i = None
-    if isinstance(idx, OpenAIEmbed):
-        i = idx.add(text, meta)
-        if i is None:
-            return None
-    else:
-        i = idx.add(text, meta)
-    return i
+    meta.setdefault("at", time.strftime("%Y-%m-%d %H:%M:%S"))
+    return idx.add(text, meta)
 
 
 def search(query, top_k=5, min_score=0.0):
@@ -253,12 +214,13 @@ def search(query, top_k=5, min_score=0.0):
     if isinstance(idx, OpenAIEmbed):
         res = idx.search(query, top_k, min_score)
         if res is None:
-            idx_local = LocalIndex()
+            # API 失效：用本地哈希向量兜底重建临时索引检索
+            idx_local = LocalIndex(dim=idx.dim)
             for d in idx.docs:
                 idx_local.add(d["text"], d["meta"])
-            return idx_local.search(query, top_k, min_score)
-        return sorted(res, key=lambda x: -x["score"])[:top_k]
-    return idx.search(query, top_k, min_score)
+            return idx_local.search(query, top_k, min_score) or []
+        return res
+    return idx.search(query, top_k, min_score) or []
 
 
 def save_index():
@@ -278,6 +240,8 @@ def _load():
     with _index_lock:
         if _index is None:
             return False
+        if not os.path.exists(INDEX_FILE):
+            return False  # 首次运行无索引属正常，不算错误
         try:
             with open(INDEX_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)

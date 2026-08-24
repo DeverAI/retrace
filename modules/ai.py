@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import time
 
-from core import config, logger
+from core import audit, config, logger
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -95,11 +95,11 @@ def chat(messages, temperature=0.2, max_tokens=1500, model=None, prepend_safety=
 def _audit_call(base, model, messages, started, outcome, error=""):
     """Audit metadata only; prompts, API keys and response bodies are never persisted."""
     try:
-        from core import audit
         audit.record("ai.chat", {"endpoint": base, "model": model,
                                  "message_count": len(messages or []),
                                  "duration": round(time.time() - started, 3),
-                                 "error": error}, actor="ai", resource="model:%s" % model,
+                                 "error": error}, actor="ai",
+                     resource="model:%s" % model,
                      outcome=outcome, risk="medium")
     except Exception as exc:
         logger.record_err("ai.audit", exc)
