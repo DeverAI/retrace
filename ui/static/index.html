@@ -27,6 +27,14 @@
   </main>
 </div>
 <div id="toasts" aria-live="polite"></div>
-<script src="app.js"></script>
+<!-- 加载顺序即依赖顺序：core(基础) → nav(导航/模板) → views_*(视图注册) → boot(启动) -->
+<script src="core.js"></script>
+<script src="nav.js"></script>
+<script src="views_main.js"></script>
+<script src="views_screener.js"></script>
+<script src="views_modules.js"></script>
+<script src="views_ops.js"></script>
+<script src="views_flow.js"></script>
+<script src="boot.js"></script>
 </body>
 </html>
