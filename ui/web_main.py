@@ -135,13 +135,9 @@ def _call(module, func, kwargs):
             db.audit("web.set_switches", "switches=%s" % json.dumps(cfg, ensure_ascii=False))
             return {"ok": True}
         if func == "save_ai":
-            cfg = config.get()
-            if not isinstance(cfg.get("ai"), dict):
-                cfg["ai"] = {}
-            for k in ("base_url", "api_key", "model", "timeout"):
-                if k in kwargs:
-                    cfg["ai"][k] = kwargs[k]
-            config.save()
+            values = {k: kwargs[k] for k in
+                      ("base_url", "api_key", "model", "timeout") if k in kwargs}
+            config.update_section("ai", values)
             db.audit("web.save_ai", "base=%s model=%s" % (kwargs.get("base_url", ""), kwargs.get("model", "")))
             return {"ok": True}
         if func == "get_ai":

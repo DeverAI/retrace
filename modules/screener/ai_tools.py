@@ -105,7 +105,6 @@ def scan_ai_tool_traces(keyword=""):
     kw = (keyword or "").strip().lower()
     items, seen = [], set()
     home = _home()
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
     for pat in AI_TOOL_PATTERNS:
         hay = (pat["vendor"] + " " + pat["product"] + " " + pat["desc"]).lower()
         if kw and kw not in hay:

@@ -286,18 +286,22 @@ def _run_async(owner, fn, cb, *args, **kwargs):
     w.done.connect(w.deleteLater)
 
     def _cleanup():
-        # 线程结束后从锚定列表移除自身并释放 Worker 引用，防内存驻留
-        for lst in (owner._threads, win._threads if win is not None else None):
-            if lst is not None:
-                try:
-                    if thread in lst:
-                        lst.remove(thread)
-                except (ValueError, RuntimeError):
-                    pass
-        try:
-            del thread._w
-        except (AttributeError, RuntimeError):
-            pass
+        # 统一经 _INV 排回主线程执行：finished 信号在 worker 线程触发，
+        # 直接操作锚定列表会与主线程 append 竞态；owner 页面可能已销毁，
+        # 全程 RuntimeError 容忍。
+        def _do():
+            for lst in (owner._threads, win._threads if win is not None else None):
+                if lst is not None:
+                    try:
+                        if thread in lst:
+                            lst.remove(thread)
+                    except (ValueError, RuntimeError):
+                        pass
+            try:
+                del thread._w
+            except (AttributeError, RuntimeError):
+                pass
+        _INV.emit_run(_do)
 
     thread.finished.connect(_cleanup)
     thread.finished.connect(thread.deleteLater)
@@ -517,13 +521,7 @@ class _TaskEditDialog(QDialog):
 #  共享助手
 # ============================================================================
 def _save_ai(base, key, model):
-    cfg = config.get()
-    if not isinstance(cfg.get("ai"), dict):
-        cfg["ai"] = {}
-    cfg["ai"]["base_url"] = base
-    cfg["ai"]["api_key"] = key
-    cfg["ai"]["model"] = model
-    config.save()
+    config.update_section("ai", {"base_url": base, "api_key": key, "model": model})
 
 
 def _autostart_enabled():

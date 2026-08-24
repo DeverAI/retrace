@@ -388,3 +388,41 @@
   （parse_bool / as_bool / strict_bool），其余一律委托。
 - [2200 行单文件 screener / 3000 行单文件 gui] 多域职责混杂导致改动风险高、回归无法定位。
   正确做法：按职责拆包 + 入口平面再导出保持零调用方改动 + 拆分后跑全量回归。
+
+
+## 26. 全量检修第二轮：安全守卫与前端致命缺陷（2026-08-25）
+
+- [CSS 注释内嵌星斜杠 = 整表报废] 注释文本写 "views_*/boot" 时，`*/` 提前终止注释，
+  其后 `boot 契约）==== */ :root {...}` 被解析器按"非法规则+块"整体吞掉——:root
+  全部自定义属性未注册，所有 var() 静默失效，页面半白半黑且无任何报错。
+  正确做法：注释内严禁 `*/` 序列；用 CSSOM（document.styleSheets[0].cssRules）
+  验证规则数量，而不是只看文件字节。
+- [builder 回调引用未初始化外层 const = TDZ] viewTemplate 的 builder 在 const body
+  初始化完成前同步执行，builder 内引用外层 body 即 ReferenceError，且 async boot
+  里表现为 unhandledrejection 而非同步崩溃，极易漏诊。正确做法：builder 一律从
+  入参解构 `{ body, output, log }`；诊断用 window.addEventListener("unhandledrejection")。
+- [tshark -X lua_script = 白名单内的任意代码执行] run_command 只拦 -w/-F/-G 时，
+  `-X lua_script:file` 可借 tshark 内置 Lua 引擎执行任意代码。正确做法：对可执行
+  白名单命令做"显式参数安全集"校验（长选项一律拒绝），而不是只拉黑已知危险项。
+- [ipconfig 多开关夹带] 只校验 argv[1] 时 `/all /release` 可夹带破坏性动词。
+  正确做法：遍历全部开关参数逐一校验，或模板化固定 argv。
+- [manifest 后置落盘违反恢复不变量] 清理循环全部结束才写 manifest.json，
+  中途崩溃=已隔离文件成孤儿、无法一键恢复。正确做法：先写空 manifest，
+  每处理完一项原子重写（tmp+replace+fsync）。
+- [隔离物撞保留名] 被隔离文件恰好叫 manifest.json 时会被最终清单截断覆盖。
+  正确做法：隔离目标对保留名强制改名，并在 manifest 记录 renamed_from。
+- [注册表备份宽 except OSError 把"部分不可读"当"已不存在"] 深层子键无权限时
+  整树备份作废→返回"已不存在"→虚报清理成功且无备份。正确做法：区分
+  FileNotFoundError（真不存在）与权限类 OSError（中止并拒绝删除）；枚举循环
+  结束的 winerror 259（ERROR_NO_MORE_ITEMS）必须与真错误区分。
+- [Windows SO_REUSEADDR 允许双绑] 冲突检测用 bind 失败判断时，SO_REUSEADDR
+  在 Windows 上允许二次绑定同端口，检测永远不触发。正确做法：单实例工具用
+  SO_EXCLUSIVEADDRUSE。
+- [history 单槽覆盖毁掉关键信号] 漂移监测 history 每路径只存最后值时，
+  "A→B→删除→A 复活"被误判为 regenerated 而非 recreated_same_value。
+  正确做法：每路径累积历史态集合（FIFO 上限），判定同时校验 sha+size。
+- [TextMetrics 克隆丢 IDL getter] Object.create(proto) 的裸对象读取
+  actualBoundingBoxAscent 等会 Illegal invocation。正确做法：逐字段从真实
+  对象取值包普通对象返回。
+- [AudioBuffer.getChannelData 每次加噪会累积漂移] 活缓冲被反复读取时噪声
+  叠加破坏音频。正确做法：WeakSet 去重，仅首读一次性注入确定性微扰。

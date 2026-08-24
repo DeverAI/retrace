@@ -80,6 +80,7 @@ def save():
 
     写盘用独立信号量串行（避免长 IO 阻塞读路径）；_lock 为 RLock，
     允许 set_switches/update_section 持锁期间安全调用本函数。
+    序列化失败（如调用方塞入不可 JSON 化对象）不得炸穿调用方，也不得残留 .tmp。
     """
     if _cfg is None:
         return
@@ -95,8 +96,13 @@ def save():
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, indent=2)
             os.replace(tmp, CONFIG_PATH)
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
             logger.record_err("config.save", e)
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
 
 
 def set_switches(**kwargs):

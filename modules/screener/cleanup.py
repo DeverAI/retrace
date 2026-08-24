@@ -60,38 +60,58 @@ def _backup_reg_value(root_name, subkey, value_name, qdir):
 
 
 def _backup_reg_key(root_name, subkey, qdir):
-    """递归备份注册表键。返回 (True, 文件名) / (False, None)=已不存在 / 抛异常=备份失败。"""
-    import winreg
+    """递归备份注册表键。
+
+    返回 (True, 文件名) / (False, None)=键真不存在 /
+    抛 RuntimeError=键存在但部分内容不可读（调用方必须拒绝删除，绝不虚报成功）。
+    """
+
+    class _PartialRead(RuntimeError):
+        pass
 
     def walk(key_path, depth=0):
         if depth > 12:
             raise RuntimeError("注册表键过深，中止备份")
         node = {}
         try:
-            with winreg.OpenKey(_winroot(root_name), key_path, 0, winreg.KEY_READ) as key:
-                vals, i = {}, 0
-                while True:
-                    try:
-                        vname, vdata, vtype = winreg.EnumValue(key, i)
-                    except OSError:
+            key = winreg.OpenKey(_winroot(root_name), key_path, 0, winreg.KEY_READ)
+        except FileNotFoundError:
+            return None  # 该键真不存在
+        except OSError as e:
+            # 键存在但打不开（权限等）→ 绝不能当作"已不存在"
+            raise _PartialRead("键不可读: %s (%s)" % (key_path, e))
+        with key:
+            vals, i = {}, 0
+            while True:
+                try:
+                    vname, vdata, vtype = winreg.EnumValue(key, i)
+                except OSError as e:
+                    if e.winerror == 259:  # ERROR_NO_MORE_ITEMS：正常枚举结束
                         break
-                    vals[vname] = {"type": vtype, "data": _safe_json_value(vdata)}
-                    i += 1
-                node["values"] = vals
-                subs, i = {}, 0
-                while True:
-                    try:
-                        sname = winreg.EnumKey(key, i)
-                    except OSError:
+                    raise _PartialRead("值枚举中断: %s (%s)" % (key_path, e))
+                vals[vname] = {"type": vtype, "data": _safe_json_value(vdata)}
+                i += 1
+            node["values"] = vals
+            subs, i = {}, 0
+            while True:
+                try:
+                    sname = winreg.EnumKey(key, i)
+                except OSError as e:
+                    if e.winerror == 259:
                         break
-                    subs[sname] = walk(key_path + "\\" + sname, depth + 1)
-                    i += 1
-                node["subkeys"] = subs
-        except OSError:
-            return None
+                    raise _PartialRead("子键枚举中断: %s (%s)" % (key_path, e))
+                child = walk(key_path + "\\" + sname, depth + 1)
+                if child is not None:
+                    subs[sname] = child
+                i += 1
+            node["subkeys"] = subs
         return node
 
-    tree = walk(subkey)
+    import winreg
+    try:
+        tree = walk(subkey)
+    except _PartialRead:
+        raise  # 调用方按"备份失败→拒绝删除"处理
     if tree is None:
         return (False, None)
     payload = {"root": root_name, "subkey": subkey, "tree": tree}
@@ -122,6 +142,20 @@ def _delete_reg_key_recursive(root_name, subkey):
         return False
 
 
+MANIFEST_NAME = "manifest.json"
+
+
+def _write_manifest_atomic(qroot, manifest_payload):
+    """manifest 原子落盘（tmp + replace）。清理过程中每处理完一项即重写，
+    保证任意时刻断电/崩溃，磁盘上都有"已处理项"的完整恢复记录。"""
+    tmp = os.path.join(qroot, MANIFEST_NAME + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(manifest_payload, f, ensure_ascii=False, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, os.path.join(qroot, MANIFEST_NAME))
+
+
 def _quarantine_fs(path, qroot, manifest):
     p = os.path.abspath(path)
     if _is_protected_fs_path(p):
@@ -129,6 +163,10 @@ def _quarantine_fs(path, qroot, manifest):
     base = os.path.basename(p)
     if not base:
         return False  # 盘符根/空 basename 拒绝
+    if base.lower() == MANIFEST_NAME:
+        # 保留名：被隔离物若叫 manifest.json，会被恢复清单覆盖 → 强制改名隔离
+        stem, ext = os.path.splitext(base)
+        base = "%s_quarantined_%s%s" % (stem, uuid.uuid4().hex[:6], ext)
     if not os.path.exists(p):
         return True  # 已不存在，视为已清理
     is_dir = os.path.isdir(p)
@@ -136,7 +174,9 @@ def _quarantine_fs(path, qroot, manifest):
     if os.path.exists(dest):
         dest = dest + "_" + uuid.uuid4().hex[:6]
     shutil.move(p, dest)
-    manifest.append({"type": "dir" if is_dir else "file", "target": p, "backup": dest})
+    manifest.append({"type": "dir" if is_dir else "file", "target": p,
+                     "backup": dest,
+                     "renamed_from": os.path.basename(p) if base != os.path.basename(p) else ""})
     return True
 
 
@@ -260,11 +300,14 @@ def cleanup_traces(items, reason=""):
             logger.record_err("screen.cleanup.restore", e)
             return {"ok": False, "error": "系统还原点创建失败，已中止清理: %s" % e}
 
-        # 2) 逐项清理
+        # 2) 逐项清理（manifest 增量落盘：任意时刻崩溃都有已完成项的恢复记录）
         qroot = os.path.join(config.ROOT, "backups", "quarantine",
                              time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6])
         os.makedirs(qroot, exist_ok=True)
         manifest, results, denied = [], [], []
+        manifest_payload = {"created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "reason": reason, "items": manifest}
+        _write_manifest_atomic(qroot, manifest_payload)
         for it in items:
             if not isinstance(it, dict):
                 results.append({"target": "", "ok": False, "error": "非法项类型"})
@@ -297,12 +340,8 @@ def cleanup_traces(items, reason=""):
             except Exception as e:
                 logger.record_err("screen.cleanup.item", e)
                 results.append({"target": target, "ok": False, "error": str(e)})
-
-        # 3) 写 manifest（供一键恢复）
-        manifest_payload = {"created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "reason": reason, "items": manifest}
-        with open(os.path.join(qroot, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump(manifest_payload, f, ensure_ascii=False, default=str)
+            # 每项处理完立即重写 manifest（备份已发生，记录必须先于下一步删除）
+            _write_manifest_atomic(qroot, manifest_payload)
 
         ok_count = sum(1 for r in results if r.get("ok"))
         db.audit("screen.cleanup", "items=%d ok=%d denied=%d reason=%s" % (

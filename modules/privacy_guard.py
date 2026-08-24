@@ -460,15 +460,15 @@ def register_registry_scope(task_id, root, subkey, publisher="", ownership_note=
              "registered_at": time.strftime("%Y-%m-%d %H:%M:%S")}
     cfg = config.get()
     section = cfg.setdefault("privacy_guard", {})
-    # 读-改-写与 config.save() 必须持锁串行：Web 为 ThreadingHTTPServer 多线程，
-    # 两个并发登记（或与撤销/开关保存并发）会丢更新或撕裂 deepcopy 快照。
+    # 读-改-写经 update_section（锁内合并 + 原子落盘）；_scope_lock 仅串行化
+    # 多次登记之间的业务顺序，消除与 save() 锁内 deepcopy 的并发竞态。
     with _scope_lock:
         scopes = section.setdefault("registry_scopes", [])
         scopes[:] = [item for item in scopes if not (
             int(item.get("task_id", 0)) == int(task_id) and
             _normalize_registry(item.get("root", "") + "\\" + item.get("subkey", "")) == full)]
         scopes.append(scope)
-        config.save()
+        config.update_section("privacy_guard", {"registry_scopes": scopes})
     audit.record("privacy.registry_scope", scope, actor="user",
                  resource="task:%s" % task_id, risk="high")
     return {"ok": True, "scope": scope, "writes_performed": False}
@@ -514,8 +514,7 @@ def remove_registry_scope(task_id, subkey, reason="", confirmation=""):
                 remaining.append(scope)
         if removed is None:
             raise KeyError("未找到匹配的登记范围")
-        section["registry_scopes"] = remaining
-        config.save()
+        config.update_section("privacy_guard", {"registry_scopes": remaining})
     audit.record("privacy.registry_scope_remove",
                  {"task_id": int(task_id), "subkey": subkey, "reason": reason},
                  actor="user", resource="task:%s" % task_id, risk="high")

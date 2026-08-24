@@ -55,7 +55,9 @@ def _write_err(text):
                 return False
 
 
-_last_full_log = [0.0]
+_last_full_log = {}  # context -> 上次完整落盘时间戳（按来源分键限频，防不同错误互吞）
+_RATE_WINDOW = 2.0
+_RATE_MAX_KEYS = 64
 
 
 def record_err(context="", exc=None):
@@ -70,13 +72,16 @@ def record_err(context="", exc=None):
     else:
         text += "(no traceback)\n"
     now = time.time()
-    if now - _last_full_log[0] < 2.0:
-        if exc is not None:
-            _write_err(text.splitlines()[0] + " (同 2s 内重复错误，详情已限频)")
-        else:
-            _write_err(text.splitlines()[0])
+    key = str(context or "")
+    last = _last_full_log.get(key, 0.0)
+    if now - last < _RATE_WINDOW:
+        # 同源 2s 内重复：只落一行摘要；不同来源各自有完整堆栈
+        _write_err(text.splitlines()[0] + " (同源 2s 内重复，详情已限频)")
     else:
-        _last_full_log[0] = now
+        if len(_last_full_log) >= _RATE_MAX_KEYS:
+            oldest = min(_last_full_log, key=_last_full_log.get)
+            _last_full_log.pop(oldest, None)
+        _last_full_log[key] = now
         written = _write_err(text)
         if not written:
             error("Err.log 写入失败: %s" % (str(exc) if exc else context))

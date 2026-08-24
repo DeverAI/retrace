@@ -86,17 +86,23 @@
     // 确定性偏移足以打乱哈希，肉眼与排版不可感知。
     try {
       const rawMeasure = C2D.prototype.measureText;
+      // TextMetrics 的度量是 IDL 原型 getter（依赖内部槽位），
+      // Object.create(proto) 的裸对象读取会 Illegal invocation。
+      // 因此逐字段从真实对象取值，包一层普通对象返回。
+      const METRIC_FIELDS = ["width", "actualBoundingBoxLeft",
+        "actualBoundingBoxRight", "actualBoundingBoxAscent",
+        "actualBoundingBoxDescent", "fontBoundingBoxAscent",
+        "fontBoundingBoxDescent"];
       C2D.prototype.measureText = function (...args) {
         const m = rawMeasure.apply(this, args);
         notify("measureText");
-        const j = (h32(0x03, m.width * 1024) % 41 - 20) * 0.001; // ±0.02px
-        const w = m.width + j;
-        const out = Object.create(Object.getPrototypeOf(m));
-        Object.defineProperties(out, {
-          width: { value: w },
-          actualBoundingBoxLeft: { value: m.actualBoundingBoxLeft + j },
-          actualBoundingBoxRight: { value: m.actualBoundingBoxRight + j }
-        });
+        const out = {};
+        const j = (h32(0x03, Math.round((m.width || 0) * 1024)) % 41 - 20) * 0.001;
+        for (const f of METRIC_FIELDS) {
+          if (m[f] === undefined) continue;
+          out[f] = (f === "width" || f === "actualBoundingBoxLeft" ||
+                    f === "actualBoundingBoxRight") ? (m[f] + j) : m[f];
+        }
         return out;
       };
     } catch (_) { /* 老引擎无 measureText 属性描述符时放弃该面 */ }
@@ -132,22 +138,40 @@
         }
         const rawRead = Proto.readPixels;
         if (rawRead) {
+          // 就地在调用方传入的视图上扰动（天然尊重 byteOffset）：
+          //   字节型（RGBA8，绝对主流）→ 每像素 RGB 通道 ±2 确定性抖动；
+          //   非字节型（Uint16/Int32/Float32，如 5_6_5 或整型读回）→ 按元素 ±小步长；
+          //   其余未知类型 → 跳过（不冒险写坏调用方缓冲）
           Proto.readPixels = function (x, y, w, h, fmt, type, pixels) {
             notify(tag + ".readPixels");
             const rv = rawRead.call(this, x, y, w, h, fmt, type, pixels);
             try {
-              if (pixels && pixels.length && this.canvas) {
-                const tmp = document.createElement("canvas");
-                tmp.width = this.canvas.width; tmp.height = this.canvas.height;
-                const tctx = tmp.getContext("2d");
-                const img = new ImageData(new Uint8ClampedArray(pixels.buffer
-                  ? pixels.buffer.slice(0)
-                  : new Uint8Array(pixels).buffer.slice(0)), w, h);
-                void tctx; // 仅复用扰动函数，不真正绘制
-                const out = perturb(img, 0x06);
-                pixels.set(new Uint8Array(out.data.buffer));
+              if (!pixels || !pixels.length) return rv;
+              if (pixels instanceof Uint8Array || pixels instanceof Uint8ClampedArray) {
+                for (let i = 0; i + 3 < pixels.length; i += 4) {
+                  const [dx, dy, dz] = jitter3(h32(0x06, i), 2);
+                  const r = pixels[i] + dx;
+                  pixels[i] = r < 0 ? 0 : (r > 255 ? 255 : r);
+                  const g = pixels[i + 1] + dy;
+                  pixels[i + 1] = g < 0 ? 0 : (g > 255 ? 255 : g);
+                  const b = pixels[i + 2] + dz;
+                  pixels[i + 2] = b < 0 ? 0 : (b > 255 ? 255 : b);
+                }
+              } else if (pixels instanceof Float32Array) {
+                for (let i = 0; i < pixels.length; i += 4) {
+                  const [dx, dy, dz] = jitter3(h32(0x06, i), 2);
+                  pixels[i] += dx * 1e-4;
+                  pixels[i + 1] += dy * 1e-4;
+                  pixels[i + 2] += dz * 1e-4;
+                }
+              } else if (pixels instanceof Uint16Array || pixels instanceof Int32Array ||
+                         pixels instanceof Uint32Array) {
+                for (let i = 0; i < pixels.length; i += 4) {
+                  const [dx] = jitter3(h32(0x06, i), 2);
+                  pixels[i] = (pixels[i] + dx) >>> 0;
+                }
               }
-            } catch (_) { /* 类型不符的像素缓冲保持原样 */ }
+            } catch (_) { /* 未知缓冲形态保持原样 */ }
             return rv;
           };
         }
@@ -157,7 +181,8 @@
     } catch (_) { /* WebGL 不可用环境跳过 */ }
 
     // ---- 4) AudioContext：频/时域采样微扰 --------------------------------
-    // OfflineAudioContext 指纹的读出端必然经过下列四个 API 之一。
+    // AnalyserNode 四个读取口 + AudioBuffer 读出端（OfflineAudioContext
+    // 指纹的经典路径经 AudioBuffer.getChannelData/copyFromChannel 取数）。
     try {
       const saltAudio = 0x07;
       const hookAudio = (AC) => {
@@ -189,6 +214,46 @@
         wrap("getByteTimeDomainData", false);
       };
       hookAudio(window.AnalyserNode);           // AnalyserNode 承载全部四个读取口
+
+      // AudioBuffer：getChannelData 返回的是活缓冲（播放共用同一数组），
+      // 不能每次调用都加噪（会累积漂移）。策略：每缓冲仅首读时一次性注入
+      // 确定性微扰（WeakSet 去重）——指纹哈希自首次读取即被瓦解，且
+      // 累积失真为零；copyFromChannel 只扰动调用方的目标副本，天然幂等。
+      const AB = window.AudioBuffer;
+      if (AB && AB.prototype) {
+        const perturbed = new WeakSet();
+        const rawGet = AB.prototype.getChannelData;
+        if (rawGet) {
+          AB.prototype.getChannelData = function (ch) {
+            const arr = rawGet.call(this, ch);
+            notify("getChannelData");
+            try {
+              if (arr && arr.length && !perturbed.has(arr)) {
+                perturbed.add(arr);
+                for (let i = 0; i < arr.length; i += 512) {
+                  arr[i] = arr[i] + ((h32(saltAudio + 3, i) % 7 - 3) * 1e-7);
+                }
+              }
+            } catch (_) { /* 冻结等异常保持原样 */ }
+            return arr;
+          };
+        }
+        const rawCopy = AB.prototype.copyFromChannel;
+        if (rawCopy) {
+          AB.prototype.copyFromChannel = function (dest, ch, start) {
+            notify("copyFromChannel");
+            const rv = rawCopy.call(this, dest, ch, start);
+            try {
+              if (dest && dest.length) {
+                for (let i = 0; i < dest.length; i += 512) {
+                  dest[i] = dest[i] + ((h32(saltAudio + 4, i) % 7 - 3) * 1e-7);
+                }
+              }
+            } catch (_) { /* 保持原样 */ }
+            return rv;
+          };
+        }
+      }
     } catch (_) { /* AudioContext 缺失环境跳过 */ }
 
     try { delete window.__retraceInstallCanvasGuard; } catch (_) {}

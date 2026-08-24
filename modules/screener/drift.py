@@ -47,11 +47,12 @@ def build_snapshot(paths):
 def classify_paths(baseline, history, current):
     """纯函数：按 (baseline, history, current) 三方给每条路径定状态。
 
-    - 在 baseline：当前也在 → 同值 unchanged / 异值 value_changed；
-      当前不在 → gone。
-    - 不在 baseline：当前在 → 若 history 有同值记录 → recreated_same_value；
-      history 异值 → regenerated_new_value；无记录 → new。
-    - 都不在 → 忽略。
+    history 为 {path: [{sha16,size}, ...]} 的累积集合（每路径保留多个历史态），
+    使"删除后以任意历史值复活"都可被识别：
+      - 在 baseline：当前也在 → 同值 unchanged / 异值 value_changed；当前不在 → gone
+      - 不在 baseline：当前在 → history 中存在 (sha,size) 完全相同条目 →
+        recreated_same_value；history 有该路径但值都不同 → regenerated_new_value；
+        无记录 → new
     """
     baseline = baseline or {}
     history = history or {}
@@ -68,10 +69,12 @@ def classify_paths(baseline, history, current):
                          "baseline_sha": b.get("sha16", ""),
                          "current_sha": c.get("sha16", "")})
         elif c:
-            hist = history.get(path)
-            if hist and hist.get("sha16") == c.get("sha16"):
+            hist_entries = history.get(path) or []
+            sig = {"sha16": c.get("sha16"), "size": c.get("size")}
+            if any(e.get("sha16") == sig["sha16"] and e.get("size") == sig["size"]
+                   for e in hist_entries if isinstance(e, dict)):
                 status = "recreated_same_value"
-            elif hist:
+            elif hist_entries:
                 status = "regenerated_new_value"
             else:
                 status = "new"
@@ -86,7 +89,13 @@ def load_state():
         try:
             data = json.loads(raw)
             if isinstance(data, dict):
-                return (data.get("baseline") or {}, data.get("history") or {})
+                baseline = data.get("baseline") or {}
+                history = data.get("history") or {}
+                # 兼容 v1 单对象格式 {path: {sha16,size}} → 包装为列表
+                for p, v in list(history.items()):
+                    if isinstance(v, dict):
+                        history[p] = [v]
+                return (baseline, history)
         except ValueError:
             pass
     return None, None
@@ -146,8 +155,16 @@ def fingerprint_drift_report(keyword="", commit=False):
                 "检测到指纹文件被删除后以相同内容复活——软件具备云端/备份恢复机制，"
                 "仅本地清理无效；需配合账号侧注销或沙箱隔离。")
     if commit or first_run:
+        # history 每路径累积历史态集合（上限 8 条/路径，FIFO），只增不减：
+        # 这样"值 A → 值 B → 删除 → 软件用 A 复活"仍能识别 recreated_same_value
         merged_history = dict(history or {})
-        merged_history.update(current)
+        for p, sig in current.items():
+            entries = [e for e in merged_history.get(p, []) if isinstance(e, dict)]
+            if sig not in entries:
+                entries.append(dict(sig))
+                merged_history[p] = entries[-8:]
+            else:
+                merged_history[p] = entries  # 已见过的态：保持原序
         save_state(current, merged_history)
         report["baseline_committed"] = True
     db.audit("screen.drift", "keyword=%s tracked=%d first=%s commit=%s" % (

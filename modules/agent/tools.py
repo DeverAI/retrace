@@ -287,6 +287,40 @@ def _scan_wer_traces(keyword):
     return screener.scan_wer_traces(keyword=keyword)
 
 
+@tool("scan_ai_tool_traces", "扫描 AI 编码工具痕迹（Claude Code/Codex/Gemini CLI 等；身份字段仅哈希预览）",
+      RISK_READ, ["keyword"])
+def _scan_ai_tool_traces(keyword=""):
+    from modules import screener
+    return screener.scan_ai_tool_traces(keyword=keyword)
+
+
+@tool("fingerprint_drift_report", "指纹再生监测：对比上次基线，识别清理后被软件原样复活的文件"
+      "（recreated_same_value=有云端恢复）。只读报告，不改基线",
+      RISK_READ, ["keyword"])
+def _fingerprint_drift_report(keyword=""):
+    from modules import screener
+    # 安全考量：commit=True 会覆写漂移基线、销毁"清理前后"对比证据，
+    # 故 Agent 通道强制只读；基线管理走 GUI/Web 的人工确认路径。
+    return screener.fingerprint_drift_report(keyword=keyword, commit=False)
+
+
+@tool("sandbox_test_plan", "生成沙箱对照实验材料：可直接保存的 .wsb 配置 + 六步操作清单（纯规划不执行）",
+      RISK_READ, ["exe_path", "network"])
+def _sandbox_test_plan(exe_path, network=False):
+    from modules import privacy_guard
+    from core.coerce import strict_bool
+    return privacy_guard.build_sandbox_test_plan(exe_path,
+                                                 strict_bool(network) if network is not None else False)
+
+
+@tool("capture_status", "查看抓包实例状态与最近数据包计数（name 默认 main）", RISK_READ, ["name"])
+def _capture_status(name="main"):
+    from modules import pcap
+    snap = pcap.capture_status(name=name)
+    snap["recent_sample"] = _cap(pcap.get_recent(name=name, limit=10), 10)
+    return snap
+
+
 @tool("privacy_plan", "生成带原因、精确参数、回滚/备份步骤的系统操作预案；不执行变更",
       RISK_CMD, ["action", "args", "reason"])
 def _privacy_plan(action, args, reason):
@@ -302,6 +336,24 @@ CMD_BLACKLIST = {"del", "erase", "rm", "rmdir", "rd", "deltree", "format",
                  "cmd", "start", "net", "subst", "attrib", "cscript", "wscript",
                  "wmic"}
 CMD_FORBIDDEN = {"|", ">", "<", "&", ";", "`", "$(", ".."}
+
+
+# tshark 仅放行只读分析参数；-X（lua_script 任意代码执行）、-w/-F/-G（写文件）、
+# -C（配置）、--export-*（批量落盘）等一律确定性拒绝
+TSHARK_SAFE = {"-r", "-i", "-f", "-Y", "-T", "-e", "-E", "-D", "-q", "-l",
+               "-n", "-N", "-d", "-s", "-c", "-B", "-p", "-S", "-t", "-u", "-V"}
+
+
+def _vet_tshark(argv):
+    for a in argv[1:]:
+        if a.startswith("--"):
+            return "tshark 长选项被禁止: %s" % a
+        if a.startswith("-") and a != "-":
+            if a in ("-w", "-F", "-G", "-X", "-C") or a.startswith(("-w", "-X")):
+                return "tshark 写文件/Lua/导出参数被禁止: %s" % a
+            if a not in TSHARK_SAFE:
+                return "tshark 参数不在安全白名单: %s" % a
+    return None
 
 
 @tool("run_command", "运行白名单系统命令（必须说明可审查原因）", RISK_CMD, ["command", "reason"])
@@ -324,14 +376,20 @@ def _run_command(command, reason=""):
         return {"error": "reg 写操作被禁止，仅允许 query"}
     if base == "reg" and len(argv) == 1:
         argv = [argv[0], "query"]
-    if base == "ipconfig" and len(argv) > 1:
-        sub = argv[1].lower().lstrip("/-")
-        if sub not in ("all", "displaydns"):
-            return {"error": "ipconfig 仅允许查询（/all /displaydns），拒绝 %s" % argv[1]}
-    if base == "tshark":
+    if base == "ipconfig":
+        # 所有开关参数逐一校验（防 /all /release 夹带破坏性动词）
+        IPCONFIG_SAFE = {"all", "displaydns"}
         for a in argv[1:]:
-            if a in ("-w", "-F", "-G") or a.startswith("-w"):
-                return {"error": "tshark 写文件/导出参数被禁止（-w/-F/-G）"}
+            if a.startswith("/"):
+                sub = a[1:].lower()
+                if sub not in IPCONFIG_SAFE:
+                    return {"error": "ipconfig 仅允许查询开关（/all /displaydns），拒绝 %s" % a}
+            elif not a.startswith("-"):
+                return {"error": "ipconfig 不接受位置参数: %s" % a}
+    if base == "tshark":
+        err = _vet_tshark(argv)
+        if err:
+            return {"error": err}
     try:
         p = _run_cmd(argv, timeout=int(config.section("agent", {}).get("cmd_timeout", 30)))
         result = {"command": " ".join(argv), "returncode": p.returncode,

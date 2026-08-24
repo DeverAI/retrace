@@ -335,18 +335,31 @@ def _broadcast(payload):
     return delivered
 
 
+_server_bind_ok = threading.Event()  # bind 结果回传：set=成功；失败由 start() 感知
+_server_bind_error = ""
+
+
 def _server_loop(port):
-    global _sock
+    global _sock, _server_bind_error
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # Windows 下 SO_REUSEADDR 允许双绑同端口（冲突检测失效），
+    # 单实例工具改用排他绑定：端口被占时 bind 明确失败并上报
+    try:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    except OSError:
+        pass
     try:
         s.bind(("127.0.0.1", port))
         s.listen(8)
     except OSError as e:
         logger.record_err("browser.socket", e)
-        _sock_ready.set()  # 通知 stop() 无需空等
+        _server_bind_error = "端口 %d 绑定失败: %s" % (port, e)
+        _sock_ready.set()  # 通知 stop()/start() 无需空等
         return
     _sock = s
+    _server_bind_error = ""
+    _server_bind_ok.set()
     _sock_ready.set()
     while True:
         try:
@@ -361,7 +374,7 @@ def _server_loop(port):
 def start(port=None):
     global _server_thread, _token
     if _server_thread is not None and _server_thread.is_alive():
-        return False
+        return True
     if not port:
         try:
             port = int(config.section("browser").get("ws_port", 8765))
@@ -369,9 +382,14 @@ def start(port=None):
             port = 8765
     _token = _gen_token()
     _sock_ready.clear()
+    _server_bind_ok.clear()
     _server_thread = threading.Thread(target=_server_loop, args=(port,),
                                       daemon=True, name="browser-ws")
     _server_thread.start()
+    _sock_ready.wait(3)  # 等 bind 结果（成功/失败都会置位）
+    if not _server_bind_ok.is_set():
+        logger.error("browser 中枢启动失败：%s" % (_server_bind_error or "未知原因"))
+        return False
     return True
 
 
@@ -392,6 +410,7 @@ def stop():
         except OSError:
             pass
     _sock = None
+    _server_bind_ok.clear()
     _sock_ready.clear()
     t = _server_thread
     _server_thread = None
@@ -436,7 +455,9 @@ def status():
                 "tabs": len(_recent_tabs),
                 "dom_events": len(_recent_dom),
                 "privacy_events": len(_recent_privacy),
-                "token_set": bool(_token)}
+                "token_set": bool(_token),
+                "bind_ok": _server_bind_ok.is_set(),
+                "bind_error": _server_bind_error}
 
 
 def register(bus, cfg):
@@ -445,7 +466,8 @@ def register(bus, cfg):
             if isinstance(cfg.get("browser"), dict) else 8765
     except (TypeError, ValueError):
         port = 8765
-    start(port)
+    if not start(port):
+        logger.error("browser 中枢未能启动（端口 %d），扩展将无法连接" % port)
     bus.subscribe("browser.observe", lambda d: send_command("observe_dom",
                                                             enabled=bool(d.get("enabled")))
                   if d else None)

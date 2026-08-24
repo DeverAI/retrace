@@ -185,6 +185,13 @@ class TrackingPage(QWidget):
         if not task:
             return
         def cb(rows):
+            # 任务被并发删除时 _Worker 会把异常转成 {"error":...} dict，
+            # 必须与 show_runs/show_audit 一致做结构守卫，否则静默失败
+            if not isinstance(rows, list):
+                _set_status(self.status, "事件加载失败：%s" %
+                            (rows.get("error", "未知错误") if isinstance(rows, dict) else rows),
+                            "err")
+                return
             compact = [{"time": r.get("last_seen") or r.get("ts"), "type": r.get("type"),
                         "operation": (r.get("data") or {}).get("operation") or
                                      (r.get("data") or {}).get("action", ""),

@@ -114,13 +114,16 @@ def _scan_uninstall_traces(keyword):
                         "reason": "卸载残留" if residual else "卸载条目",
                         "install_location": loc, "residual": residual,
                         "state": "未处理"})
-                    # 残留：额外产出可清理的卸载子键 + 安装目录
+                    # 残留：额外产出卸载子键定位（注意：HKLM\SOFTWARE\Microsoft\Windows
+                    # 前缀在清理端属确定性拒绝范围，此项仅作精确定位参考，
+                    # 实际清理须经 privacy_guard 预案或手动操作）
                     if residual:
                         items.append({
                             "category": "留样", "name": "卸载条目(%s)" % (disp or sub),
                             "path": full_key, "type": "registry_key", "target": full_key,
-                            "detail": "残留卸载条目（主 exe 缺失）: %s" % full_key,
-                            "risk": "高", "reason": "卸载残留", "state": "未处理"})
+                            "detail": "残留卸载条目（主 exe 缺失）: %s ｜ 系统范围写保护，"
+                                      "仅定位参考，批量清理会拒绝该项" % full_key,
+                            "risk": "高", "reason": "卸载残留（定位参考）", "state": "未处理"})
                         if loc and os.path.isdir(loc):
                             items.append({
                                 "category": "留样", "name": "安装目录(%s)" % (disp or sub),

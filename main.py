@@ -40,16 +40,19 @@ def main():
         logger.warn("检测到 Err.log 有未修复错误，请先查看处理：")
         logger.warn(logger.read_err()[:500])
 
+    # import 无副作用（副作用在 register_all 调用时才发生）
     from modules import register_all, shutdown as modules_shutdown
-    register_all(events.bus, cfg)
-    logger.info("已启用模块: %s" % ", ".join(modules_active()))
 
+    # 自检必须保持只读：register_all 会启动 tracking 守护、绑定 WS 端口等真实副作用
     if args.selfcheck:
         try:
             run_selfcheck(cfg)
         finally:
             modules_shutdown()
         return
+
+    register_all(events.bus, cfg)
+    logger.info("已启用模块: %s" % ", ".join(modules_active()))
 
     if args.agent is not None:
         from modules.agent.cli import run_cli

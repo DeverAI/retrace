@@ -33,8 +33,13 @@ def redact(value):
 def record(action, detail=None, actor="system", resource="", outcome="success",
            risk="info", request_id=""):
     request_id = request_id or uuid.uuid4().hex
-    safe = _redact(detail or {})
-    body = json.dumps(safe, ensure_ascii=False, sort_keys=True, separators=(",", ":"))[:12000]
+    try:
+        safe = _redact(detail or {})
+        body = json.dumps(safe, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"))[:12000]
+    except Exception as e:
+        # 脱敏/序列化失败（循环引用、超深嵌套等）不得打断业务主流程
+        body = json.dumps({"_redact_error": str(e)[:200]}, ensure_ascii=False)
     last_error = None
     for attempt in range(2):
         try:

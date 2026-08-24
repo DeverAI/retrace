@@ -181,3 +181,50 @@ class DbTest(unittest.TestCase):
 if __name__ == "__main__":
     logger.clear_err()
     unittest.main()
+
+
+class ConfigSaveRobustTest(unittest.TestCase):
+    """save() 对不可序列化值的容错 + tmp 不残留（检修回归）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "config.json")
+        p = mock.patch.object(config, "CONFIG_PATH", self.path)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(self.tmp.cleanup)
+        config._cfg = None
+        config.load()
+
+    def tearDown(self):
+        config._cfg = None
+
+    def test_unserializable_value_no_crash_no_tmp(self):
+        config.update_section("custom", {"blob": object()})
+        # update_section 内部已 save：不得抛异常
+        self.assertFalse(os.path.exists(self.path + ".tmp"))
+
+    def test_save_swallows_serialization_error(self):
+        config.get()["junk"] = {"bad": {1, 2, 3}}  # set 不可 JSON 化
+        config.save()  # 不得抛 TypeError
+        self.assertFalse(os.path.exists(self.path + ".tmp"))
+
+    def test_valid_save_still_works(self):
+        config.update_section("custom", {"k": "v"})
+        with open(self.path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["custom"]["k"], "v")
+
+
+class LoggerRateLimitTest(unittest.TestCase):
+    """不同来源的错误在限频窗口内互不吞栈。"""
+
+    def test_different_contexts_both_persist(self):
+        from core import logger
+        e1 = ValueError("err-one")
+        e2 = KeyError("err-two")
+        logger.record_err("unit.a", e1)
+        logger.record_err("unit.b", e2)
+        content = logger.read_err()
+        self.assertIn("err-one", content)
+        self.assertIn("err-two", content)
+        logger.clear_err()

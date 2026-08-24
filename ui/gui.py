@@ -104,7 +104,11 @@ class MainWindow(QMainWindow):
     # ---- 事件 ----
     def closeEvent(self, ev):
         if not QSystemTrayIcon.isSystemTrayAvailable():
-            self._real_quit()
+            # 无托盘环境：退出被后台任务否决时必须保留窗口，
+            # 否则 setQuitOnLastWindowClosed(False) 会留下无界面僵尸进程
+            if not self._real_quit():
+                ev.ignore()
+                return
             ev.accept()
             return
         self.hide()
@@ -121,6 +125,7 @@ class MainWindow(QMainWindow):
         webbrowser.open("http://127.0.0.1:%d/" % self._port)
 
     def _real_quit(self):
+        """尝试真正退出。返回 True=已批准退出；False=被后台任务否决（窗口须保留）。"""
         self.tray.hide()
         self._quitting = True
         all_done = True
@@ -137,8 +142,9 @@ class MainWindow(QMainWindow):
             self.tray.show()
             QMessageBox.warning(self, "后台任务仍在收尾",
                                 "为避免中断数据库或配置写入，本次退出已取消。请稍后再试。")
-            return
+            return False
         self._app.quit()
+        return True
 
 
 def launch_gui(args):

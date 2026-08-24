@@ -182,6 +182,12 @@ class Capture:
                 return False
             if self.thread is not None and self.thread.is_alive():
                 return False
+            # 同步前置校验：tshark 缺失等硬性失败立即返回 False，
+            # 而不是异步置 error 让调用方误以为已开始抓包
+            if not find_tshark():
+                self.state = "error"
+                self.error = "未找到 tshark，请安装 Wireshark"
+                return False
             self.state = "starting"
             self.stop_flag.clear()
             self.error = None

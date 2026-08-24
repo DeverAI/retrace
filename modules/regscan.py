@@ -19,6 +19,11 @@ MAX_HITS = 2000
 MAX_DEPTH = 12
 MAX_NODES = 120000
 SCAN_SEM = threading.BoundedSemaphore(2)
+# regex 模式防线：注册表值可达数百 KB，恶意/失误的回溯爆炸正则会
+# 单核打满并占死 SCAN_SEM。限制模式长度 + 匹配文本截断 + 拒绝嵌套量词。
+MAX_REGEX_LEN = 256
+MAX_REGEX_TEXT = 64 * 1024
+_NESTED_QUANT_RE = re.compile(r"\([^()]*[+*][^()]*\)[+*{]")
 
 ROOTS = {
     "HKLM": winreg.HKEY_LOCAL_MACHINE,
@@ -106,15 +111,20 @@ def _match_mode(text, keyword, mode):
         with REGEX_CACHE_LOCK:
             rx = REGEX_CACHE.get(keyword)
             if rx is None:
-                try:
-                    rx = re.compile(keyword, re.IGNORECASE)
-                except re.error:
+                if len(keyword) > MAX_REGEX_LEN:
                     rx = False
+                elif _NESTED_QUANT_RE.search(keyword):
+                    rx = False  # 嵌套量词：ReDoS 风险，确定性拒绝
+                else:
+                    try:
+                        rx = re.compile(keyword, re.IGNORECASE)
+                    except re.error:
+                        rx = False
                 REGEX_CACHE[keyword] = rx
         if not rx:
             return False
         try:
-            return rx.search(text) is not None
+            return rx.search(text[:MAX_REGEX_TEXT]) is not None
         except re.error:
             return False
     return kw in low
