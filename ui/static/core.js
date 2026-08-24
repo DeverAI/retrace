@@ -136,8 +136,14 @@ function hint(text) { return el("div", "hint-block", text); }
 function card(title, content, hintText) {
   const c = el("section", "card");
   if (title) c.appendChild(section(title, hintText));
-  if (Array.isArray(content)) content.forEach(x => x && c.appendChild(x));
-  else if (content) c.appendChild(content);
+  // 深度拍平：子项本身可以是数组（如 IIFE 返回 [formRow, toolbar] 的场景）
+  const flat = [];
+  const push = (x) => {
+    if (Array.isArray(x)) x.forEach(push);
+    else if (x) flat.push(x);
+  };
+  push(content);
+  flat.forEach(x => c.appendChild(x));
   return c;
 }
 function textarea(placeholder, value, rows) {

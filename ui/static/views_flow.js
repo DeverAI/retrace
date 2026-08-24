@@ -1,5 +1,5 @@
 function vHunt() {
-  const body = viewTemplate("v_hunt", "漏洞主流程", "M9 · HUNT", "target", "flow", ({ output }) => {
+  const body = viewTemplate("v_hunt", "漏洞主流程", "M9 · HUNT", "target", "flow", ({ body, output }) => {
     const aname = input("目标名");
     const apath = input("路径");
     const agentsSel = el("select");
@@ -119,7 +119,7 @@ function vHunt() {
    M5 自我进化（evolve）
    ============================================================ */
 function vEvolve() {
-  const body = viewTemplate("v_evolve", "自我进化", "M5 · EVOLVE", "broom", "analysis", ({ output }) => {
+  const body = viewTemplate("v_evolve", "自我进化", "M5 · EVOLVE", "broom", "analysis", ({ body, output }) => {
     const mineBtn = btn("挖掘候选规则", async () => {
       await run("evolve", async () => {
         const r = await api("evolve", "mine_rules");
@@ -171,7 +171,7 @@ function vEvolve() {
    设置
    ============================================================ */
 function vSettings() {
-  const body = viewTemplate("v_settings", "设置", "CONFIG", "gear", "system", ({ output }) => {
+  const body = viewTemplate("v_settings", "设置", "CONFIG", "gear", "system", ({ body, output }) => {
 
     body.appendChild(card("① 模块开关（重启生效）", [
       (function () {
@@ -317,7 +317,7 @@ function vSettings() {
    AI 助手（M10 agent 入口，未配置 key 时仅显示提示）
    ============================================================ */
 function vAgent() {
-  const body = viewTemplate("v_agent", "AI 助手", "M10 · AGENT", "lock", "flow", ({ output }) => {
+  const body = viewTemplate("v_agent", "AI 助手", "M10 · AGENT", "lock", "flow", ({ body, output }) => {
     const task = textarea("在此输入任务指令（如：列出可疑进程并标记高风险）", "", 3);
     const runBtn = btn("发送给 Agent", async () => {
       await run("agent", async () => {

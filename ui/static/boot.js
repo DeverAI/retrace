@@ -50,7 +50,17 @@ async function boot() {
     const saved = localStorage.getItem(LS_KEY);
     if (saved && VIEWS[saved]) target = saved;
   } catch (e) { /* ignore */ }
+  // hash 深链：#v_screener 直达指定视图（可收藏/分享定位）
+  try {
+    const h = (location.hash || "").slice(1);
+    if (h && VIEWS[h]) target = h;
+  } catch (e) { /* ignore */ }
   goto(target);
+  // 后续 hash 变化（含浏览器前进/后退）同步切换视图
+  window.addEventListener("hashchange", () => {
+    const h = (location.hash || "").slice(1);
+    if (h && VIEWS[h]) goto(h);
+  });
 }
 boot();
 

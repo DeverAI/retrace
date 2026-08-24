@@ -1,5 +1,5 @@
 function vScreener() {
-  const body = viewTemplate("v_screener", "筛查工作台", "M11 · SCREENER", "shield", "recon", ({ output, log }) => {
+  const body = viewTemplate("v_screener", "筛查工作台", "M11 · SCREENER", "shield", "recon", ({ body, output, log }) => {
     // 最近一次留样扫描的 items（用于 preview_cleanup / cleanup_traces）
     let lastTraceItems = [];
     // 最近一次通用/文件筛查的结果（用于 analyze_with_ai 传参）

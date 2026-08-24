@@ -80,7 +80,7 @@ function vOverview() {
    M1 网络抓包
    ============================================================ */
 function vPcap() {
-  const body = viewTemplate("v_pcap", "网络抓包", "M1 · PCAP", "globe", "recon", ({ output }) => {
+  const body = viewTemplate("v_pcap", "网络抓包", "M1 · PCAP", "globe", "recon", ({ body, output }) => {
     const sel = input("接口名"); const lim = input("条数", "", "200");
     let running = false; let startBtn;
     const startBtnClick = async () => {

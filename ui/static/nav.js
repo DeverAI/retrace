@@ -34,6 +34,10 @@ function goto(id) {
   const link = document.querySelector('#navlinks a[data-view="' + id + '"]');
   if (link) link.classList.add("active");
   try { localStorage.setItem(LS_KEY, id); } catch (e) { /* ignore */ }
+  // 同步 hash（相同值不触发 hashchange，无循环风险）
+  try {
+    if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+  } catch (e) { /* ignore */ }
 }
 function renderNav() {
   const nav = document.getElementById("navlinks");

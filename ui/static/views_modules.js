@@ -1,5 +1,5 @@
 function vRegscan() {
-  const body = viewTemplate("v_regscan", "注册表搜索", "M2 · REGSCAN", "list", "recon", ({ output }) => {
+  const body = viewTemplate("v_regscan", "注册表搜索", "M2 · REGSCAN", "list", "recon", ({ body, output }) => {
     const kw = input("关键词");
     const root = select(["HKLM", "HKCU", "HKU", "ALL"], "HKLM");
     const mode = select([["包含", "contains"], ["精确值", "exact"], ["路径", "path"]], "contains");
@@ -98,7 +98,7 @@ function vRegscan() {
    M3 经验检索
    ============================================================ */
 function vEmbed() {
-  const body = viewTemplate("v_embed", "经验检索", "M3 · EMBEDDING", "search", "analysis", ({ output }) => {
+  const body = viewTemplate("v_embed", "经验检索", "M3 · EMBEDDING", "search", "analysis", ({ body, output }) => {
     const q = input("检索关键词");
     const topK = input("Top K", "", "10");
     const btn1 = btn("检索", async () => {
@@ -165,7 +165,7 @@ function vEmbed() {
    M6 多类别反编译
    ============================================================ */
 function vDecompile() {
-  const body = viewTemplate("v_decompile", "多类别反编译", "M6 · DECOMPILE", "code", "analysis", ({ output }) => {
+  const body = viewTemplate("v_decompile", "多类别反编译", "M6 · DECOMPILE", "code", "analysis", ({ body, output }) => {
     const path = input("文件路径（py/exe/dll/class）", "wide");
     const btnRun = btn("反编译分析", async () => {
       await run("decompile", async () => {
@@ -199,7 +199,7 @@ function vDecompile() {
    M7 APP 集中观察（watcher + remove + status + snapshot）
    ============================================================ */
 function vWatcher() {
-  const body = viewTemplate("v_watcher", "APP 集中观察", "M7 · WATCHER", "eye", "flow", ({ output }) => {
+  const body = viewTemplate("v_watcher", "APP 集中观察", "M7 · WATCHER", "eye", "flow", ({ body, output }) => {
     const name = input("目标名");
     const exe = input("exe 路径（可选）");
     const limit = input("时间线条数", "", "300");
@@ -277,7 +277,7 @@ function vWatcher() {
    M4 浏览器控制
    ============================================================ */
 function vBrowser() {
-  const body = viewTemplate("v_browser", "浏览器控制", "M4 · BROWSER", "window", "recon", ({ output }) => {
+  const body = viewTemplate("v_browser", "浏览器控制", "M4 · BROWSER", "window", "recon", ({ body, output }) => {
     const cmd = input("命令（list_tabs / snapshot / activate / observe_dom / ping / canvas_guard）", "wide");
     const refreshBtn = btn("刷新状态", async () => {
       await run("browser", async () => {

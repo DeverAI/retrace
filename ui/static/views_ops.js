@@ -1,5 +1,5 @@
 function vAi() {
-  const body = viewTemplate("v_ai", "大模型集成", "M8 · AI", "spark", "analysis", ({ output }) => {
+  const body = viewTemplate("v_ai", "大模型集成", "M8 · AI", "spark", "analysis", ({ body, output }) => {
     // ① 状态
     const statusBtn = btn("检查 AI 是否已配置", async () => {
       await run("ai", async () => {
@@ -78,7 +78,7 @@ function vAi() {
    任务追踪（vTracking，全套跟踪任务操作）
    ============================================================ */
 function vTracking() {
-  const body = viewTemplate("v_tracking", "追踪任务", "DAEMON · TASKS", "clock", "flow", ({ output }) => {
+  const body = viewTemplate("v_tracking", "追踪任务", "DAEMON · TASKS", "clock", "flow", ({ body, output }) => {
     // ① 全局：刷新 + 验证审计链
     const refreshBtn = btn("刷新任务", async () => {
       await run("tracking", async () => {
@@ -234,7 +234,7 @@ function vTracking() {
    隐私保护（vPrivacy，全套门禁操作）
    ============================================================ */
 function vPrivacy() {
-  const body = viewTemplate("v_privacy", "隐私保护", "PRIVACY GUARD", "shield", "system", ({ output }) => {
+  const body = viewTemplate("v_privacy", "隐私保护", "PRIVACY GUARD", "shield", "system", ({ body, output }) => {
     const reasonInput = input("明确原因（≥12 字：目的、对象、必要性）", "wide");
     const taskIdInput = input("任务 ID（归属）");
     const subkey = input("HKCU 子树（Software\\厂商\\产品）");
