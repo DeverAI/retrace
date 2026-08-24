@@ -12,6 +12,7 @@ import time
 import uuid
 
 from core import audit, config, db, events, logger
+from core.coerce import strict_bool as _to_bool
 
 SUB_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 MAX_SCAN_FILES = 1200
@@ -19,21 +20,6 @@ MAX_SCAN_FILES = 1200
 
 def _now():
     return time.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _to_bool(value):
-    """严格布尔解析：拒绝字符串 "false"/"0" 被误当 True。"""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in ("1", "true", "on", "yes"):
-            return True
-        if s in ("0", "false", "off", "no"):
-            return False
-    raise ValueError("布尔值格式无效: %r" % value)
 
 
 def _run(argv, timeout=20):

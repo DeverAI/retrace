@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 from ctypes import wintypes
 
 from core import audit, config, db, logger
+from core.coerce import strict_bool as _strict_bool
 
 SUB_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CONFIRMATION_PHRASE = "我已审查并批准"
@@ -279,19 +280,7 @@ def _sandbox_preview(exe_path, network=False, clipboard=False, memory_mb=4096,
                             "依赖驱动/服务/宿主安装状态的 APP 可能无法运行"]}
 
 
-def _strict_bool(value):
-    """严格布尔：HTTP 层可能传入字符串，bool("false")==True 会把关闭误判为开启。"""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in ("1", "true", "on", "yes"):
-            return True
-        if s in ("0", "false", "off", "no", ""):
-            return False
-    raise ValueError("布尔值格式无效: %r" % value)
+# _strict_bool 已统一至 core.coerce.strict_bool（模块顶部导入）
 
 
 def sandbox_preview(exe_path, network=False, clipboard=False, memory_mb=4096):

@@ -14,6 +14,7 @@ import time
 from collections import Counter
 
 from core import config, db, events, logger
+from core.coerce import strict_bool as _strict_bool
 
 RISK_MAP = {"高": 1.0, "中": 0.6, "低": 0.3, "无": 0.0, "HIGH": 1.0,
             "MED": 0.6, "LOW": 0.3, "NONE": 0.0}
@@ -53,19 +54,7 @@ def _evidence_text(obs):
     return " ".join(parts)
 
 
-def _strict_bool(value):
-    """严格布尔：拒绝 bool("false")==True 的误判（HTTP 层可能传入字符串）。"""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in ("1", "true", "on", "yes"):
-            return True
-        if s in ("0", "false", "off", "no", ""):
-            return False
-    raise ValueError("布尔值格式无效: %r" % value)
+# _strict_bool 已统一至 core.coerce.strict_bool（模块顶部导入）
 
 
 def mine_rules(min_obs=3, top_tokens=6, auto_apply=None):
