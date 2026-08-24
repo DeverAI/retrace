@@ -1,5 +1,4 @@
 """反编译共享基元：常量、危险 API 特征库、文件读取与字符串/熵提取。"""
-import json
 import math
 import os
 import re

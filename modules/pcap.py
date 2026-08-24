@@ -18,7 +18,7 @@ import subprocess
 import threading
 import time
 
-from core import config, db, events, logger
+from core import db, events, logger
 
 TSHARK_CANDIDATES = [
     r"C:\Program Files\Wireshark\tshark.exe",

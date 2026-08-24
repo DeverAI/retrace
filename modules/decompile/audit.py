@@ -3,10 +3,6 @@ import json
 import os
 
 from core import config, logger
-from modules.decompile.py_parser import analyze_python
-from modules.decompile.pe_parser import analyze_pe
-from modules.decompile.java_parser import analyze_java
-
 _DECOMPILE_AUDIT_PROMPT = (
     "你是静态反编译结果的安全审核员。下面给出反编译扫描出的高危 API 调用清单（JSON 数组）。"
     "每个调用含 api（调用名）、danger（0~1 静态风险权重）、reason（静态规则给出的理由）、"
@@ -59,6 +55,8 @@ def ai_audit(path):
     注意：审计会把调用名/静态理由发送给外部 LLM API（不含源码常量/字符串正文）。
     """
     from modules import ai
+    # 运行时导入：包 __init__ 顶层加载本模块，此处延迟到调用期规避环
+    from modules.decompile import analyze
 
     if not os.path.isfile(path):
         return {"ok": False, "error": "文件不存在: %s" % path, "file": path}

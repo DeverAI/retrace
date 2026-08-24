@@ -369,7 +369,6 @@ class Supervisor:
                 self.active.discard(task_id)
                 self.workers.pop(task_id, None)
             return
-        count = 0
         try:
             task = db.get_tracking_task(task_id)
             if not task or not task["enabled"]:
@@ -384,7 +383,6 @@ class Supervisor:
                                                  interval, retention, self.owner)
             if not committed:
                 return
-            count = len(found)
             for item in found:
                 events.bus.publish("tracking.event", {"task_id": task_id, **item})
         except Exception as exc:

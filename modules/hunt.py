@@ -14,9 +14,8 @@
 import json
 import os
 import re
-import time
 
-from core import config, db, events, logger
+from core import config, db, events
 from modules import ai, decompile, embedding, pcap, regscan, watcher
 
 

@@ -371,3 +371,20 @@
   回读文件内容，比对新值，返回 written_match 字段。
 - [Agent 系统提示未区分工具权限] 原有 AGENT_SYS 未明确只读/读写区别。正确做法：系统提示
   明确分两类权限 + 硬行为边界（绝不自动执行读写、不指导绕过付费墙）。
+
+
+## 25. 全量检修发现的潜伏缺陷（2026-08-24）
+
+- [except 变量被闭包延迟引用 → NameError] 原 ui/gui.py _mod() 在 except Exception as e 块内
+  定义 _fail 闭包并引用 e，返回时 except 块退出、解释器删除 e，之后调用 _fail() 直接抛
+  NameError 而非返回优雅降级 dict。正确做法：在 except 块内先把错误格式化成字符串，
+  闭包只捕获字符串。（pyflakes 静态扫描发现）
+- [索引文件缺失被记 Err.log 造成启动误报] modules/embedding._load 对不存在的索引文件走
+  record_err，首次运行必污染 Err.log，导致下次启动误报“检测到未修复错误”。正确做法：
+  先 os.path.exists 静默返回 False，只有存在但损坏才算错误。
+- [布尔解析四份拷贝且语义不一] config._parse_bool(非法返 None) / evolve._strict_bool(raise)
+  / privacy_guard._strict_bool(raise) / tracking._to_bool(raise) 四份近似实现，正是历史
+  string-"false" 蠕虫的温床。正确做法：全库统一 core/coerce.py 三件套
+  （parse_bool / as_bool / strict_bool），其余一律委托。
+- [2200 行单文件 screener / 3000 行单文件 gui] 多域职责混杂导致改动风险高、回归无法定位。
+  正确做法：按职责拆包 + 入口平面再导出保持零调用方改动 + 拆分后跑全量回归。

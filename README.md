@@ -77,6 +77,7 @@ python main.py --port 9000     # 指定 Web 端口（默认 8080）
 python main.py --selfcheck     # 环境自检（列出模块开关/tshark/Python 版本后退出）
 python main.py --daemon        # 仅运行持久任务后台守护（无 Web/GUI）
 python main.py --agent "任务"  # 命令行运行 LLM Agent（留空进入交互式）
+python -m unittest discover -s tests -v   # 运行回归测试套件（35 例）
 ```
 
 - **桌面 GUI**：PyQt6 主界面，含托盘图标（关闭/最小化进托盘）、开机自启开关。
@@ -126,30 +127,42 @@ python main.py --agent "任务"  # 命令行运行 LLM Agent（留空进入交�
 ```
 监控/
 ├── main.py               # 程序入口
-├── config.json           # 配置（模块开关 / AI 设置）
+├── config.json           # 配置（模块开关 / AI 设置，含密钥不入 git）
 ├── retrace.db            # SQLite 数据库（观察库 / 经验库 / 审计）
-├── core/                 # 核心层：config / db / events / logger / audit
-├── modules/              # 能力层：11 大模块 + tracking + privacy_guard
+├── core/                 # 核心层
+│   ├── coerce.py         #   全库统一布尔解析（parse_bool/as_bool/strict_bool）
+│   ├── config.py         #   配置与模块开关（update_section 统一写入口）
+│   ├── events.py         #   事件总线
+│   ├── logger.py         #   日志 + Err.log 机制
+│   ├── audit.py          #   哈希链安全审计
+│   └── db/               #   SQLite 数据层包
+│       ├── connection.py #     连接/事务上下文/通用执行原语
+│       ├── schema.py     #     表结构 DDL
+│       ├── hunt_store.py #     agents/observations/knowledge/evolve
+│       └── tracking_store.py # 任务/事件/runs/守护租约/批量提交协议
+├── modules/              # 能力层：13 模块（单文件或包）
+│   ├── screener/         #   M11 筛查工作台包（apps/traces/cleanup/machine_fp/
+│   │                     #   deep_scan/fmt_reverse/guidance/common）
+│   ├── decompile/        #   M6 反编译包（py/pe/java 解析器 + AI 审计 + 特征库）
 │   └── agent/            #   M10 LLM Agent（agent/executor/reviewer/tools/cli）
 ├── ui/                   # UI 层
-│   ├── gui.py            #   PyQt6 桌面主界面
+│   ├── gui.py            #   MainWindow + launch_gui（页面装配）
+│   ├── gui_common.py     #   QSS 主题/QThread 异步设施/控件工厂/共享助手
+│   ├── pages/            #   每页一文件（overview/screener/tracking/... 共 14 页）
 │   ├── web_main.py       #   Web 服务（stdlib http.server + JSON API）
 │   ├── autostart.py      #   开机自启
 │   ├── tray.py           #   托盘图标
-│   └── static/           #   Web 静态资源（app.js / index.html / style.css）
+│   └── static/           #   Web 静态资源（core/nav/views_*/boot.js + index/style）
 ├── extension/            # Chrome/Edge MV3 浏览器扩展
-├── dev_log/              # 版本更新文档（按日期）
-├── updates/              # 归档的 done.md
-├── backups/              # 阶段性备份（含 quarantine 隔离区）
+├── tests/                # 回归测试套件（python -m unittest discover -s tests）
 ├── README.md             # 本文档（用户指引）
 ├── Design.md             # 设计文档（当前最新状态）
 ├── Techniques.md         # 技术方案文档
 ├── Fact.md               # 用户偏好约束与事实记录
-├── Future.md             # 未来需求记录（创造力评测候选等）
+├── Future.md             # 未来需求记录
 ├── FreqErr.md            # 常见错误类型记录
 ├── Err.log               # 运行时错误日志
-├── todo.md               # 当前未完成任务
-└── done.md               # 当前已完成任务
+└── backups/              # 全量快照 zip / git bundle（不入库）
 ```
 
 ---

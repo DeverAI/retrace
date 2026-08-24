@@ -90,7 +90,6 @@ def _scan_uninstall_traces(keyword):
                             disp = _get("DisplayName")
                             loc = _get("InstallLocation")
                             pub = _get("Publisher")
-                            uninst = _get("UninstallString")
                     except OSError:
                         continue
                     hay = (disp + " " + pub + " " + loc).lower()

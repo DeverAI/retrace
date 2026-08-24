@@ -1,7 +1,6 @@
 """Python 源码/.pyc 解析：ast 危险调用扫描 + 受限子进程字节码常量提取。"""
 import ast
 import json
-import os
 import subprocess
 
 from core import logger

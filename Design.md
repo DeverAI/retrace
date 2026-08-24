@@ -334,3 +334,43 @@
   `else: return _confirm(cb, ..., forced=True)`（所有读写必须请示）
 - **系统提示词更新**：`AGENT_SYS` 明确区分两类权限 + 新增硬边界（绝不自动执行读写、不指导绕过付费墙）
 - **入口复用**：CLI（`cli.py` _confirm 弹框）、GUI（AiHelperPage _confirm QMessageBox）、Web（未来 HTTP 审批通道）
+
+
+## 18. 全量架构检修（2026-08-24）
+
+对全部约 1.9 万行源码做一次系统性检修，原则：外部行为兼容、每步实时验证、git 全程存档。
+
+### 结构重组
+- core/db.py（622 行）→ core/db/ 包：connection（连接/事务上下文）+ schema +
+  hunt_store（agents/observations/knowledge/evolve）+ tracking_store
+  （任务/事件/runs/租约/批量提交协议）；包入口平面再导出，调用方零改动。
+- 新增 core/coerce.py：全库唯一布尔解析三件套 parse_bool/as_bool/strict_bool，
+  收编 config/evolve/privacy_guard/tracking 四处拷贝。
+- config 加固：新增 update_section() 统一段落更新入口（锁内原地合并+原子落盘），
+  save() 锁内快照深拷贝消除并发序列化竞态（FreqErr §15 遗留项正式关闭）。
+- modules/screener.py（2238 行）→ screener/ 包：apps / traces / cleanup（含恢复）/
+  machine_fp / deep_scan / fmt_reverse / guidance / common。
+- modules/decompile.py（860 行）→ decompile/ 包：py_parser / pe_parser / java_parser /
+  audit / common（特征库）。
+- ui/gui.py（3091 行）→ gui_common.py（QSS/QThread 设施/控件工厂/共享助手）+
+  ui/pages/ 包（14 个页面文件，build_pages() 按开关装配），gui.py 只剩 MainWindow 与
+  launch_gui。
+- ui/static/app.js（2116 行）→ core/nav/views_*/boot 八个有序加载脚本；
+  切分以“拼接逐字节一致”证明零语义变更。
+
+### 同步修复的真实缺陷
+- gui._mod 闭包捕获 except 变量的潜在 NameError（FreqErr §25）。
+- embedding 首跑缺索引文件误报 Err.log（同上）。
+
+### 验证体系（新增）
+- tests/ 回归套件（stdlib unittest，35 例）：coerce 矩阵、config 并发段、db 三域
+  （观察 CRUD / 知识权重钳制 / tracking 批量提交暂停竞态 / 审计哈希链与脱敏）、
+  decompile 危险调用与门禁、embedding dump/load 与静默回归、清理分类安全拒绝路径、
+  RFC6455 握手向量。
+- GUI 冒烟：QT_QPA_PLATFORM=offscreen 构建 MainWindow 全部页面并逐页切换。
+- Web 冒烟：静态资源 200 + /api/ping + POST /api/<module>/<func> 真实调用。
+- pyflakes 静态扫描零告警；node --check 校验全部 JS。
+
+### 备份策略
+git 仓库（每阶段一 commit）+ backups/retrace_full_*.zip 全量快照 +
+backups/retrace_history.bundle（含历史的离线克隆）。
