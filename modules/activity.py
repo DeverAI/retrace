@@ -527,7 +527,7 @@ def dns_snapshot():
         text = _decode(proc.stdout)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.record_err("activity.dns_cache", exc)
-        return []
+        return None  # 采集失败：调用方必须保留旧基线，不得当作"空缓存"
     names = []
     for raw in text.splitlines():
         line = raw.strip()
@@ -639,14 +639,22 @@ def correlated_events(task, pids, checkpoint, use_dns=True, use_registry=True):
     out, updates = [], {}
     if use_dns:
         current = dns_snapshot()
-        old = set(checkpoint.get("dns_cache") or [])
-        if "dns_cache" in checkpoint and pids:
-            for name in current:
-                if name not in old:
-                    out.append(_make_event("dns", "APP 运行期间出现 DNS 缓存记录: %s" % name,
-                                           {"query": name, "warning": "可能由其他进程产生"},
-                                           "dns_cache", "info", "correlated"))
-        updates["dns_cache"] = current
+        if current is None:
+            # 采集失败：保留旧基线，绝不把失败当"空缓存"制造全量假事件
+            if checkpoint.get("dns_cache") and pids:
+                out.append(_make_event(
+                    "collector.warning", "DNS 缓存采集失败，本轮放弃对比（基线保留）",
+                    {"warning": "ipconfig /displaydns 超时或不可用"},
+                    "dns_cache", "info", "correlated"))
+        else:
+            old = set(checkpoint.get("dns_cache") or [])
+            if "dns_cache" in checkpoint and pids:
+                for name in current:
+                    if name not in old:
+                        out.append(_make_event("dns", "APP 运行期间出现 DNS 缓存记录: %s" % name,
+                                               {"query": name, "warning": "关联推断非确证"},
+                                               "dns_cache", "info", "correlated"))
+            updates["dns_cache"] = current
     last_registry = float(checkpoint.get("registry_checked_epoch") or 0)
     if use_registry and time.time() - last_registry >= 30:
         snapshot = registry_snapshot(task)
@@ -659,6 +667,21 @@ def correlated_events(task, pids, checkpoint, use_dns=True, use_registry=True):
             current_reg, truncated, nodes, entries = snapshot or {}, False, 0, 0
         old_snapshot = checkpoint.get("registry_related") or {}
         old_reg = old_snapshot.get("values", old_snapshot) if isinstance(old_snapshot, dict) else {}
+        # 全空且未截断 = 采集失败（AV/EDR 拦截、权限变更）：
+        # 保留旧基线原样写回，绝不清空——否则下一轮会爆"全部消失/全部新增"双向假事件
+        scan_failed = (not current_reg and nodes == 0 and entries == 0 and not truncated)
+        if scan_failed:
+            checkpoint_values = dict(old_reg)
+            updates.update({"registry_related": {"values": checkpoint_values,
+                                                 "truncated": truncated, "nodes": nodes,
+                                                 "entries": entries},
+                            "registry_checked_epoch": time.time()})
+            if old_reg and pids:
+                out.append(_make_event(
+                    "collector.warning", "注册表快照采集失败，本轮放弃对比（基线保留）",
+                    {"warning": "读取被拦截或键范围不可用"},
+                    "registry_snapshot", "medium", "correlated"))
+            return out, updates
         if "registry_related" in checkpoint and pids:
             for key, value in current_reg.items():
                 if key not in old_reg:

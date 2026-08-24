@@ -67,13 +67,25 @@ def run_cli(task=None):
             continue
         if line.lower() in ("exit", "quit"):
             break
-        r = agent.run_task(line, confirm_cb=_confirm, notify_cb=_notify)
+        try:
+            r = agent.run_task(line, confirm_cb=_confirm, notify_cb=_notify)
+        except KeyboardInterrupt:
+            # LLM 等待期间的 Ctrl+C：终止当前任务但不退出 REPL
+            print("\n[中断] 当前任务已终止，可继续输入")
+            continue
+        except Exception as e:
+            logger.record_err("agent.cli.task", e)
+            print("任务异常: %s" % e)
+            continue
         _print_result(r)
     return 0
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, ".")
+    # 直接运行本文件时 sys.path 尚未包含项目根，必须先补再 import
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
     from core import db
     config.load()
     db.init()

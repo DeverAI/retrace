@@ -87,11 +87,9 @@ class ScreenerPage(QWidget):
             _btn("AI 工具痕迹", lambda: self._scan_kw(_mod("screener", "scan_ai_tool_traces"))),
         ))
         cdeep.layout().addLayout(_toolbar(
-            _btn("指纹再生监测（对比上次基线）",
-                 lambda: self._scan(_mod("screener", "fingerprint_drift_report")), primary=True),
+            _btn("指纹再生监测（对比上次基线）", self._drift_report, primary=True),
             _btn("记录当前为基线",
-                 lambda: self._scan(_mod("screener", "fingerprint_drift_report"),
-                                    "", True)),
+                 lambda: self._run_async_drift(True)),
         ))
         cdeep.layout().addWidget(_hint("Prefetch：程序每次运行的 .pf 执行痕迹；使用历史：MuiCache + UserAssist（ROT13）"
                                        " + AppCompat + BAM 系统级执行时间戳；WER：崩溃报告残留。卸载后仍保留。"
@@ -184,6 +182,33 @@ class ScreenerPage(QWidget):
             QMessageBox.warning(self, "提示", "请输入软件关键词（如 Qoder）")
             return
         self._scan(fn, kw)
+
+    def _drift_report(self):
+        """指纹再生监测：返回结构与常规扫描不同，走专用渲染而非 _scan。"""
+        self._run_async_drift(commit=False)
+
+    def _run_async_drift(self, commit):
+        _set_status(self.status, "漂移对比中…" if not commit else "基线记录中…", "run")
+        self.ai_out.clear()
+
+        def cb(r):
+            if not isinstance(r, dict) or r.get("error"):
+                _set_status(self.status, "错误: %s" % (r.get("error") if isinstance(r, dict) else r),
+                            "err")
+                return
+            s = r.get("summary") or {}
+            if r.get("first_run"):
+                _set_status(self.status, "首次运行：已记录基线（跟踪 %d 个文件），"
+                                        "清理后再次运行即可对比" % r.get("tracked_files", 0), "ok")
+            else:
+                warn = " ⚠️ %s" % r["warning"] if r.get("warning") else ""
+                _set_status(self.status, "跟踪 %d 项 | 变化 %d | 原样复活 %d%s" % (
+                    s.get("tracked", 0), s.get("changed", 0),
+                    s.get("recreated_same_value", 0), warn),
+                    "err" if r.get("warning") else "ok")
+            self.ai_out.setPlainText(json_dump(r))
+
+        _run_async(self, _mod("screener", "fingerprint_drift_report"), cb, "", commit)
 
     def _fmt_path(self):
         p = self.filepath.text().strip()
@@ -381,8 +406,12 @@ class ScreenerPage(QWidget):
             return
 
         def preview_cb(pv):
-            if not isinstance(pv, dict):
-                self._do_cleanup(items, reason.strip())
+            # 预览失败必须中止：绝不允许"预览不可用"绕过人工确认直接删除
+            if not isinstance(pv, dict) or pv.get("error"):
+                err = pv.get("error", "未知错误") if isinstance(pv, dict) else pv
+                QMessageBox.warning(self, "预览失败",
+                                    "清理预览未完成（%s），已中止。请重试或手动核查勾选项。" % err)
+                _set_status(self.status, "预览失败，已中止清理", "err")
                 return
             clean_lines = "\n".join("  [清理] %s  %s" % (x.get("type"), x.get("target"))
                                     for x in pv.get("will_clean", []))

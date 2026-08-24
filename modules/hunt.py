@@ -15,7 +15,7 @@ import json
 import os
 import re
 
-from core import config, db, events
+from core import config, db, events, logger
 from modules import ai, decompile, embedding, pcap, regscan, watcher
 
 
@@ -45,6 +45,9 @@ def start_hunt(agent_id, title="", options=None):
             ok, info = watcher.add_target(base, exe=agent["path"])
             if ok:
                 items.append("watcher: %s (PID %s)" % (base, info["pid"]))
+                # 联动观察的关键一步：仅 add_target 不会启动采集线程，
+                # 必须显式 start（幂等，已运行时返回 False）
+                watcher.start()
     if options.get("capture", True):
         sec = config.section("pcap")
         iface = options.get("interface") or sec.get("interface") or ""
@@ -77,30 +80,51 @@ def collect_evidence(obs_id):
         return {"ok": False, "error": "观察不存在"}
     agent = _agent(obs.get("agent_id")) or {}
     evidence = obs.get("evidence") or []
-    if agent:
+
+    def _block(etype, fn):
+        """单证据块异常隔离：任一采集源失败不拖垮其余证据与状态流转。"""
+        try:
+            return fn()
+        except Exception as e:
+            logger.record_err("hunt.collect.%s" % etype, e)
+            return {"type": etype + ".error", "detail": "采集失败: %s" % e}
+
+    def _decompile_block():
         res = decompile.analyze(agent.get("path", ""))
         if "error" not in res:
-            evidence.append({"type": "decompile", "detail": "评分: 高危%d 中危%d 可疑串%d"
-                             % (res["score"]["high"], res["score"]["med"],
-                                res["score"]["suspicious"]),
-                             "data": json.dumps(res, ensure_ascii=False)[:4000]})
-    tline = watcher.timeline_entries(100)
-    if tline:
-        evidence.append({"type": "timeline",
-                         "detail": "%d 条行为事件" % len(tline),
-                         "data": json.dumps(tline, ensure_ascii=False)[:4000]})
-    pts = regscan.autostart_points()
-    risky = [p for p in pts if p.get("risky")]
-    if risky:
-        evidence.append({"type": "reg_autostart",
-                         "detail": "%d 个自启动项，其中 %d 疑似高危"
-                         % (len(pts), len(risky)),
-                         "data": json.dumps(risky[:20], ensure_ascii=False)})
-    pkts = pcap.get_recent("hunt", 100)
-    if pkts:
-        evidence.append({"type": "packets",
-                         "detail": "%d 个数据包快照" % len(pkts),
-                         "data": json.dumps(pkts[:50], ensure_ascii=False)})
+            return {"type": "decompile", "detail": "评分: 高危%d 中危%d 可疑串%d"
+                    % (res["score"]["high"], res["score"]["med"],
+                       res["score"]["suspicious"]),
+                    "data": json.dumps(res, ensure_ascii=False)[:4000]}
+        return None
+
+    def _timeline_block():
+        tline = watcher.timeline_entries(100)
+        return {"type": "timeline", "detail": "%d 条行为事件" % len(tline),
+                "data": json.dumps(tline, ensure_ascii=False)[:4000]} if tline else None
+
+    def _reg_block():
+        pts = regscan.autostart_points()
+        risky = [p for p in pts if p.get("risky")]
+        if risky:
+            return {"type": "reg_autostart",
+                    "detail": "%d 个自启动项，其中 %d 疑似高危" % (len(pts), len(risky)),
+                    "data": json.dumps(risky[:20], ensure_ascii=False)}
+        return None
+
+    def _pcap_block():
+        pkts = pcap.get_recent("hunt", 100)
+        return {"type": "packets", "detail": "%d 个数据包快照" % len(pkts),
+                "data": json.dumps(pkts[:50], ensure_ascii=False)} if pkts else None
+
+    for etype, fn in (("decompile", _decompile_block), ("timeline", _timeline_block),
+                      ("reg_autostart", _reg_block), ("packets", _pcap_block)):
+        if not agent and etype == "decompile":
+            continue
+        block = _block(etype, fn)
+        if block:
+            evidence.append(block)
+
     db.update_observation(obs_id, evidence=evidence, status="analyzed")
     db.audit("hunt.collect", "obs=%d evidence=%d" % (obs_id, len(evidence)))
     return {"ok": True, "evidence_blocks": len(evidence)}
@@ -125,6 +149,10 @@ def finish_observation(obs_id, risk="低", category="其他", mark="", conclusio
     obs = db.get_observation(obs_id)
     if not obs:
         return {"ok": False, "error": "观察不存在"}
+    mark = str(mark or "")
+    conclusion = str(conclusion or "")
+    category = str(category or "其他")
+    risk = str(risk or "低")
     db.update_observation(obs_id, status="marked", risk=risk,
                           category=category, mark=mark, conclusion=conclusion)
     text = " ".join((category or "", risk or "", mark or "", conclusion or ""))

@@ -155,8 +155,12 @@ def run_task(task, max_steps=None, confirm_cb=None, notify_cb=None):
                              "content": "安全警告：工具调用 %s 被安全审核或用户拒绝（%s）。"
                                         "请更换策略或直接给出结论，禁止重复相同调用。" % (
                                          name, (verdict or {}).get("reason", "无理由"))})
-        # 防上下文膨胀
+        # 防上下文膨胀：裁剪量对齐「工具调用↔结果」配对边界（从索引 2 起成对排列），
+        # 避免留下无主调用或无主结果造成模型幻觉
         if len(messages) > 60:
-            messages = messages[:2] + messages[-39:]  # 保留 system + 用户任务
+            k = len(messages) - 39
+            if (k - 2) % 2:
+                k += 1
+            messages = messages[:2] + messages[k:]
     return {"ok": False, "error": "达到最大步数 %d" % max_steps,
             "steps": max_steps, "transcript": transcript}

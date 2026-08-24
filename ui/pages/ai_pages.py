@@ -157,8 +157,13 @@ class AiPage(QWidget):
 
     def refresh(self):
         def cb(cfg):
+            # worker 异常/_mod 降级时 cb 收到 {"error":...}（truthy），
+            # 不得误报为"已配置"
+            if isinstance(cfg, dict) and cfg.get("error"):
+                _set_status(self.status, "AI 状态: 读取失败（%s）" % cfg["error"], "err")
+                return
             _set_status(self.status, "AI 状态: %s" % (
-                "已配置" if cfg else "未配置（请在设置或 config.json 填 base_url/api_key/model）"),
+                "已配置" if cfg else "未配置（请在设置页 config.json 填 base_url/api_key/model）"),
                 "ok" if cfg else "err")
         _run_async(self, _mod("ai", "configured"), cb)
 

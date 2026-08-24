@@ -71,20 +71,29 @@ class BrowserPage(QWidget):
 
     def refresh_tabs(self):
         def cb(rows):
-            _fill_table(self.tabs, rows or [], 200)
-            _set_status(self.status, "标签页: %d 条" % (len(rows) if isinstance(rows, list) else 0), "ok")
+            if not isinstance(rows, list):
+                _set_status(self.status, "读取失败: %s" % (rows.get("error") if isinstance(rows, dict) else rows), "err")
+                return
+            _fill_table(self.tabs, rows, 200)
+            _set_status(self.status, "标签页: %d 条" % len(rows), "ok")
         _run_async(self, _mod("browser", "list_tabs"), cb)
 
     def refresh_dom(self):
         def cb(r):
-            _fill_table(self.tabs, r if isinstance(r, list) else [], 200)
+            if not isinstance(r, list):
+                _set_status(self.status, "读取失败: %s" % (r.get("error") if isinstance(r, dict) else r), "err")
+                return
+            _fill_table(self.tabs, r, 200)
             _set_status(self.status, "DOM 事件: %d 条" % (
                 len(r) if isinstance(r, list) else 0), "ok")
         _run_async(self, _mod("browser", "dom_events"), cb)
 
     def refresh_privacy(self):
         def cb(r):
-            _fill_table(self.tabs, r if isinstance(r, list) else [], 200)
+            if not isinstance(r, list):
+                _set_status(self.status, "读取失败: %s" % (r.get("error") if isinstance(r, dict) else r), "err")
+                return
+            _fill_table(self.tabs, r, 200)
             _set_status(self.status, "隐私告警: %d 条" % (
                 len(r) if isinstance(r, list) else 0), "ok")
         _run_async(self, _mod("browser", "privacy_events"), cb)

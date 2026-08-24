@@ -172,13 +172,23 @@ class TrackingPage(QWidget):
         task = self._selected()
         if task:
             _set_status(self.status, "正在启动任务 #%d…" % task["id"], "run")
-            _run_async(self, _mod("tracking", "start_task"), lambda r: self.refresh(), task["id"])
+
+            def cb_start(r):
+                if isinstance(r, dict) and r.get("error"):
+                    _set_status(self.status, "启动失败: %s" % r["error"], "err")
+                self.refresh()
+            _run_async(self, _mod("tracking", "start_task"), cb_start, task["id"])
 
     def pause_selected(self):
         task = self._selected()
         if task:
             _set_status(self.status, "正在暂停任务 #%d…" % task["id"], "run")
-            _run_async(self, _mod("tracking", "pause_task"), lambda r: self.refresh(), task["id"])
+
+            def cb_pause(r):
+                if isinstance(r, dict) and r.get("error"):
+                    _set_status(self.status, "暂停失败: %s" % r["error"], "err")
+                self.refresh()
+            _run_async(self, _mod("tracking", "pause_task"), cb_pause, task["id"])
 
     def load_events(self):
         task = self._selected()

@@ -474,9 +474,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             result = _call(module, func, kwargs)
             self._json({"ok": True, "data": result})
+        except (TypeError, ValueError, KeyError) as e:
+            # 参数绑定失败/业务校验失败：镜像 v1 的 400 语义，
+            # 外部本地客户端按状态码判定才不会把失败当成功
+            logger.record_err("web.api.%s.%s" % (module, func), e)
+            self._json({"ok": False, "error": str(e)}, 400)
+        except PermissionError as e:
+            self._json({"ok": False, "error": str(e)}, 403)
         except Exception as e:
             logger.record_err("web.api.%s.%s" % (module, func), e)
-            self._json({"ok": False, "error": str(e)})
+            self._json({"ok": False, "error": str(e)}, 500)
 
 
 def _switches():

@@ -92,6 +92,9 @@ class HuntPage(QWidget):
         _run_async(self, _mod("hunt", "list_agents"), cb_agents)
 
         def cb_hunts(rows):
+            if not isinstance(rows, list):
+                _set_status(self.status, "读取失败: %s" % (rows.get("error") if isinstance(rows, dict) else rows), "err")
+                return
             _fill_table(self.table, rows, 100)
         _run_async(self, _mod("hunt", "recent_hunts"), cb_hunts, 100)
 

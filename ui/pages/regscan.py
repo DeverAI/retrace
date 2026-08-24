@@ -169,8 +169,13 @@ class RegscanPage(QWidget):
 
     def snapshot_watches(self):
         def cb(r):
+            # 失败/降级 dict 不得写入 _last_snap，否则后续对比全部 AttributeError
+            if not isinstance(r, dict) or r.get("error"):
+                self._show_text("快照失败: %s" % (r.get("error") if isinstance(r, dict) else r))
+                _set_status(self.status, "快照失败", "err")
+                return
             self._last_snap = r
-            _set_status(self.status, "已快照（可再点「对比两次快照」）", "ok")
+            _set_status(self.status, "已快照（再点『对比两次快照』查看差异）", "ok")
             self._show_text(json_dump(r))
         _run_async(self, _mod("regscan", "snapshot_watches"), cb)
 

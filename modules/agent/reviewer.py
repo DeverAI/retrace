@@ -72,7 +72,13 @@ def review(name, args, context=None):
             _audit_review(name, args, None, correlation_id, context)
             return None
         v = json.loads(block.group(0))
-        result = {"verdict": v.get("verdict"), "reason": str(v.get("reason", "")),
+        # verdict 白名单化：大小写变体（"Deny"/"DENY"）曾使只读工具绕过审核；
+        # 非法取值一律降级为 None（不可用），走风险等级默认路径
+        verdict = str(v.get("verdict", "")).strip().lower()
+        if verdict not in ("allow", "deny"):
+            _audit_review(name, args, None, correlation_id, context)
+            return None
+        result = {"verdict": verdict, "reason": str(v.get("reason", "")),
                   "correlation_id": correlation_id}
         _audit_review(name, args, result, correlation_id, context)
         return result

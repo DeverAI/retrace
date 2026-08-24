@@ -85,6 +85,7 @@ def mine_rules(min_obs=3, top_tokens=6, auto_apply=None):
         groups.setdefault(key, []).append(o)
     existing = {k["title"] for k in db.list_knowledge(limit=5000)}
     rules = []
+    seen_titles = set(existing)
     for (category, weight), items in groups.items():
         if len(items) < min_obs:
             continue
@@ -95,7 +96,7 @@ def mine_rules(min_obs=3, top_tokens=6, auto_apply=None):
         if len(top) < 2:
             continue
         title = "%s 关联 %s" % (category, " / ".join(top[:3]))
-        if title in existing:
+        if title in existing or title in seen_titles:
             continue
         pattern = " AND ".join(top[:4])
         item = {

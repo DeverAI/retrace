@@ -1,5 +1,6 @@
 """M1 抓包页"""
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLineEdit, QComboBox, QTableWidget,
     QTableWidgetItem, QPlainTextEdit, QMessageBox, QSpinBox,
@@ -16,6 +17,10 @@ class PcapPage(QWidget):
     def __init__(self, window):
         super().__init__()
         self._w = window
+        # 抓包期间周期拉取最近包（主线程 QTimer，回调走 _run_async 不阻塞 UI）
+        self._timer = QTimer(self)
+        self._timer.setInterval(2000)
+        self._timer.timeout.connect(self._poll)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 20, 20, 20)
         lay.setSpacing(12)
@@ -88,11 +93,14 @@ class PcapPage(QWidget):
                 self.btn_start.setText("停止抓包" if ok else "开始抓包")
                 if ok:
                     self._poll()
+                    self._timer.start()   # 抓包期间周期刷新，否则表格永远空白
                 else:
                     QMessageBox.warning(self, "抓包失败", str(r))
             _run_async(self, _mod("pcap", "start_capture"), cb, "main", name, None)
         else:
             self.btn_start.setText("开始抓包")
+            self._timer.stop()
+            self._poll()   # 停止后收尾拉一次，保留最终包列表
             _run_async(self, _mod("pcap", "stop_capture"), lambda r: None, "main")
 
     def _poll(self):
@@ -148,6 +156,7 @@ class PcapPage(QWidget):
                 != QMessageBox.StandardButton.Yes:
             return
         def cb(r):
+            self._timer.stop()
             self.btn_start.setText("开始抓包")
             n = r if isinstance(r, int) else 0
             self._show_text("已停止全部抓包（%d 个运行中）" % n)

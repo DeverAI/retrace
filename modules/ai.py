@@ -138,9 +138,15 @@ def chat_stream(messages, temperature=0.2, max_tokens=1500):
                 delta = obj["choices"][0]["delta"].get("content", "")
             except (ValueError, KeyError, IndexError, TypeError):
                 continue
+            # 部分网关以 200 + error JSON 返回失败：显式上报而非静默吞掉
+            if isinstance(obj, dict) and obj.get("error"):
+                yield {"ok": False, "error": str(obj["error"])[:300]}
+                return
             if delta:
                 yield {"ok": True, "delta": delta}
-    except (urllib.error.URLError, OSError) as e:
+    except Exception as e:
+        # IncompleteRead（HTTPException 子类）等流截断异常不属于 OSError，
+        # 必须兜住并通知消费方，否则带着裸异常炸穿
         logger.record_err("ai.chat_stream", e)
         yield {"ok": False, "error": str(e)}
     finally:
