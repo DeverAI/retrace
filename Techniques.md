@@ -507,3 +507,15 @@ def _approve(cb, name, args, verdict, risk):
 - **CLI**：`cli.py` `_confirm` → `input("放行执行? [y/N]")`
 - **GUI**：`AiHelperPage._confirm` → `QMessageBox.question`（高危弹"[高危·必须人工审批]"）
 - **Web**：暂无人工通道 → `confirm_cb=None` → 读写一律自动拒绝（默认安全）
+
+### 17.5 recycle_file 与 reviewer 分层（2026-08-27 深度加固）
+
+- `recycle_file`（high）：`ctypes` 调 `SHFileOperationW`，`FO_DELETE` +
+  `FOF_ALLOWUNDO|FOF_NOCONFIRMATION|FOF_SILENT|FOF_NOERRORUI`。定位：比
+  remove_file 多一层系统回收站可撤销；被占用/盘未启用回收站时显式失败，
+  绝不静默降级为物理删除。安全门复用 `_is_protected_fs_path` + 12 字 reason。
+- reviewer 分层：`read` 工具静态注入拦截通过即合成 allow，不再消耗一次模型
+  通道（原本 REVIEW_PROMPT 对 read 必然 allow 却每次照发请求）；模型复核仅
+  服务 cmd/high。`_static_deny` 硬拒名单扩至 `remove_file/web_search/recycle_file`。
+- 审计脱敏：`core/redact.py` 在 executor/reviewer 落审计前把键名或值形状命中
+  的疑似秘密替换为 `<secret:len:sha10>` 占位符（同值同占位、不可还原）。

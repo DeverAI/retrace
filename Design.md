@@ -134,8 +134,8 @@
 
 ## 5. 关键技术决策
 
-- 平台：Windows（win32），已确认 Python 3.13.13、Wireshark（tshark/dumpcap）已安装。
-- 语言：Python 3.13；前端为原生 HTML/JS/CSS（无框架），全部由 Python 静态伺服。
+- 平台：Windows（win32），Python 3.12 / 3.13 均实测通过；Wireshark（tshark/dumpcap）按需自装。
+- 语言：Python 3.12+；前端为原生 HTML/JS/CSS（无框架），全部由 Python 静态伺服。
 - 数据库：SQLite（标准库 `sqlite3`），单文件 `retrace.db`。
 - 配置：`config.json`（模块开关、AI 设置、路径、观察策略），启动时加载。
 - 错误处理：运行时异常统一捕获写入 `Err.log`（logger 内建自动存错），
@@ -374,3 +374,57 @@
 ### 备份策略
 git 仓库（每阶段一 commit）+ backups/retrace_full_*.zip 全量快照 +
 backups/retrace_history.bundle（含历史的离线克隆）。
+
+## 19. 文件夹&注册表扫描：宽泛 → 细扫 → 关联指导（2026-08-26）
+
+M11 新增三段式工作流（`modules/screener/fsreg.py`，GUI 卡片②⅔ / Web 卡片⑥½），
+回答"这台机器上有哪些可疑的文件夹与注册表驻留，怎么处置"：
+
+### 三段式
+1. **宽泛扫描 `broad_scan()`**（无差别、宁可错杀不可放过）：
+   - 文件系统：用户目录群（复用 `_user_scan_dirs`）/ 桌面下载文档 / TEMP / 回收站 /
+     Program Files 浅层（≤2 层）；检测可执行与脚本落点、双扩展名伪装、autorun.inf、
+     隐藏属性、可疑命名。
+   - 注册表：Run/RunOnce×4 + Winlogon(Userinit/Shell 附加项) + AppInit_DLLs +
+     IFEO Debugger 映像劫持 + Active Setup StubPath + 服务 ImagePath（非 system32 者）。
+   - 计划任务 XML 的 Command 指向临时/用户目录者；用户/公共启动文件夹条目。
+2. **定向细扫 `deep_dir_scan(dir)`**：对单独目录全量清单 + 可执行文件 SHA-256/熵指纹
+   （数量/总字节双配额），并联动反查引用该目录/可执行基名的注册表常驻点位、
+   MuiCache/UserAssist/AppCompat/BAM 与 Prefetch 执行痕迹。
+3. **关联分析 `correlate_findings(result)`**（纯函数）：把任意筛查结果按可疑主体聚类
+   （同一 exe > 同一注册表键 > 同一父目录），归并证据组（自启动/服务/计划任务/
+   文件在盘缺失/Prefetch/使用历史/伪装命名…），按规则矩阵输出确定性处置建议与
+   五步总体行动计划；低风险无驻留证据的碎片折叠为 CFOLD 一条。
+
+### 工程红线
+- 全程只读；写操作仍必须走 cleanup 门禁（还原点 + quarantine 备份）。
+- 所有遍历带 deadline + 条目/字节上限，截断如实写入结果 `notes`（不静默）。
+- 宽泛 ≠ 倾倒：AppData 里数千正常 exe/dll 会淹没真信号，宽泛只列"分数≥0.4 或带旗标"
+  的项，纯清单留给细扫逐个列；服务仅在悬空/临时落点/可疑命名/风险命令行时列举。
+- Winlogon 默认 Userinit/Shell（含全路径写法）不误报，仅非默认附加项计分。
+
+### 测试
+tests/test_fsreg.py 15 例：关联器纯函数矩阵（悬空残留/临时落脚升高/Prefetch 低危/
+折叠/劫持建议）、Winlogon 全路径默认值不误报、宽泛注入根目录端到端、细扫清单哈希
+与伪装检测、注册表常驻收集器结构契约。
+
+
+## 20. 全量检修第三轮（2026-08-27）
+
+四路并行审计出线索、人工逐条核实后修复 15 处确认缺陷，19 条新回归入
+tests/test_maint_round.py（全套 138 绿）。结构性变化：
+
+- **凭据预览红线**：machine_fp 对 token 类别/敏感文件名只输出 sha256 指纹，
+  与 ai_tools「绝不回显明文令牌」同源。
+- **基线时序**：drift 过滤视图 commit 改为 merge + 首次过滤拒绝；读改写持锁。
+- **进程生命周期**：pcap stop/start 竞态双面封死；browser WS 帧写全局互斥；
+  watcher 根 PID 映像每周期复核，防 PID 复用误归因。
+- **manifest 时序统一**：cleanup FS 隔离补齐与注册表同款「intent 先落盘」，
+  崩溃窗口不再产生孤儿备份。
+- **预算与粒度**：scan_leftover 单遍带截断；traces/deep_scan 区分
+  FileNotFoundError 与权限 OSError。
+- **错误面收敛**：web 500 固定文案+编号；config.save 进程唯一 tmp+重试；
+  clear_err 入互斥。
+
+详细缺陷-修复对照见 FreqErr §28。残余已接受项：extension 握手协议维持
+查询串方式（环回+常量时间比较边界成立），popup 已掩码化。

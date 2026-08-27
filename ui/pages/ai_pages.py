@@ -2,6 +2,7 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLineEdit, QPlainTextEdit, QMessageBox,
+    QTextBrowser,
 )
 
 from ui.gui_common import (
@@ -26,43 +27,80 @@ class AiHelperPage(QWidget):
         self.input = QLineEdit()
         self.input.setPlaceholderText("例如：列出可疑进程 / 检查 D:\\x.exe 的指纹 / 查看网络连接")
         self.input.returnPressed.connect(self._run)
-        c.layout().addLayout(_row(self.input, _btn("发送给 AI", self._run, primary=True)))
+        self._btn_run = _btn("发送给 AI", self._run, primary=True)
+        c.layout().addLayout(_row(self.input, self._btn_run))
         lay.addWidget(c)
 
-        c2 = _card("结果")
+        c2 = _card("实时步骤")
         self.out = QPlainTextEdit()
         self.out.setReadOnly(True)
+        self.out.setMaximumHeight(180)
         c2.layout().addWidget(self.out)
+        c2.layout().addWidget(_hint(
+            "运行期间实时显示每一步：模型思考 → 工具调用 → 安全审批 → 执行结果。"))
         lay.addWidget(c2)
+
+        c3 = _card("结果")
+        self.md_view = QTextBrowser()
+        self.md_view.setReadOnly(True)
+        self.md_view.setOpenExternalLinks(False)
+        c3.layout().addWidget(self.md_view)
+        c3.layout().addWidget(_hint(
+            "AI 答复按 Markdown 渲染（标题/表格/代码高亮样式）。"))
+        lay.addWidget(c3, 1)
 
     def _run(self):
         task = self.input.text().strip()
         if not task:
             return
-        self.out.setPlainText("AI 处理中（工具执行需经审核）...")
+        self.out.setPlainText("== 任务 ==\n%s\n" % task)
+        self.md_view.setPlainText("")
+        self._send_btn_dis()
+
+        def notify(msg):
+            # worker 线程调用 → 排队到 GUI 线程追加，实时显示中间步骤
+            _INV.emit_run(lambda: self._append_line(msg))
 
         def cb(r):
+            self._send_btn_en()
             if not isinstance(r, dict):
                 r = {}
             if r.get("final"):
-                self.out.setPlainText("== 结果 ==\n" + r["final"])
+                self._append_line("== 结果 ==")
+                try:
+                    # final 是 Markdown 文本 → 渲染展示（表格/加粗/代码）
+                    self.md_view.setMarkdown(r["final"])
+                except Exception:
+                    self.md_view.setPlainText(str(r["final"]))
+                self._append_line("(结果已渲染到下方「结果」区)")
             elif r.get("error"):
-                self.out.setPlainText("错误: %s" % r["error"])
-            else:
-                self.out.setPlainText(str(r))
+                self._append_line("== 错误 == %s" % r["error"])
+                self.md_view.setPlainText("错误: %s" % r["error"])
             tr = r.get("transcript") or []
             if tr:
-                lines = ["", "-- 执行过程 --"]
-                for t in tr:
-                    if t.get("denied"):
-                        lines.append("  [被拒] %s" % t["tool"])
-                    else:
-                        res = t.get("result", {}) or {}
-                        lines.append("  [%s] %s (%.2fs)" % (
-                            "OK" if res.get("ok") else "FAIL", t["tool"], res.get("dur", 0)))
-                self.out.appendPlainText("\n".join(lines))
+                self._append_line("-- 执行过程（%d 次工具调用）--" % len(tr))
+                denied = sum(1 for t in tr if t.get("denied"))
+                okk = sum(1 for t in tr if not t.get("denied")
+                          and (t.get("result") or {}).get("ok"))
+                self._append_line("  成功 %d / 失败 %d / 被拒 %d" % (
+                    okk, len(tr) - denied - okk, denied))
+            self._append_line("(共 %s 步)" % r.get("steps", 0))
 
-        _run_async(self, _agent_run_task, cb, task, self._confirm)
+        _run_async(self, _agent_run_task, cb, task, self._confirm, notify)
+
+    def _append_line(self, text):
+        try:
+            self.out.appendPlainText(text)
+        except RuntimeError:
+            pass
+
+    def _send_btn_dis(self):
+        self._btn_run.setEnabled(False)
+        self._running = True
+
+    def _send_btn_en(self):
+        self._btn_run.setEnabled(True)
+        self._running = False
 
     def _confirm(self, name, args, verdict, forced):
         """审批回调（worker 线程调用）：排队到 GUI 线程弹框，阻塞等待用户。"""
@@ -101,9 +139,9 @@ class AiHelperPage(QWidget):
         return result["ok"]
 
 
-def _agent_run_task(task, confirm_cb):
+def _agent_run_task(task, confirm_cb, notify_cb=None):
     from modules.agent import agent
-    return agent.run_task(task, confirm_cb=confirm_cb, notify_cb=None)
+    return agent.run_task(task, confirm_cb=confirm_cb, notify_cb=notify_cb)
 
 
 class AiPage(QWidget):
@@ -121,7 +159,7 @@ class AiPage(QWidget):
         c1 = _card("① 问答（带上下文）")
         self.q = QLineEdit(); self.q.setPlaceholderText("向大模型提问（自动叠加只读顾问边界）")
         self.q.returnPressed.connect(self.ask)
-        self.answer = QPlainTextEdit(); self.answer.setReadOnly(True)
+        self.answer = QTextBrowser(); self.answer.setReadOnly(True)
         c1.layout().addLayout(_form_row(("问题", self.q)))
         c1.layout().addLayout(_toolbar(
             _btn("提问", self.ask, primary=True),
@@ -176,6 +214,12 @@ class AiPage(QWidget):
             if isinstance(r, dict) and r.get("error"):
                 _set_status(self.status, "错误: %s" % r["error"], "err")
                 self.answer.setPlainText("错误: %s" % r["error"])
+            elif isinstance(r, dict) and r.get("text"):
+                _set_status(self.status, "完成", "ok")
+                try:
+                    self.answer.setMarkdown(str(r["text"]))
+                except Exception:
+                    self.answer.setPlainText(str(r["text"]))
             else:
                 _set_status(self.status, "完成", "ok")
                 self.answer.setPlainText(str(r))
@@ -206,6 +250,12 @@ class AiPage(QWidget):
             if isinstance(r, dict) and (r.get("error") or r.get("ok") is False):
                 _set_status(self.status, "摘要失败: %s" % r.get("error", "未知错误"), "err")
                 self.out_text.setPlainText(json_dump(r))
+            elif isinstance(r, dict) and r.get("text"):
+                _set_status(self.status, "完成", "ok")
+                try:
+                    self.out_text.setMarkdown(str(r["text"]))
+                except Exception:
+                    self.out_text.setPlainText(str(r["text"]))
             else:
                 _set_status(self.status, "完成", "ok")
                 self.out_text.setPlainText(json_dump(r))
@@ -241,6 +291,12 @@ class AiPage(QWidget):
             if isinstance(r, dict) and r.get("error"):
                 _set_status(self.status, "错误: %s" % r["error"], "err")
                 self.out_text.setPlainText("错误: %s" % r["error"])
+            elif isinstance(r, dict) and r.get("text"):
+                _set_status(self.status, "完成", "ok")
+                try:
+                    self.out_text.setMarkdown(str(r["text"]))
+                except Exception:
+                    self.out_text.setPlainText(str(r["text"]))
             else:
                 _set_status(self.status, "完成", "ok")
                 self.out_text.setPlainText(json_dump(r))

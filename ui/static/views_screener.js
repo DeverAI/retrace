@@ -257,43 +257,101 @@ function vScreener() {
          + " + AppCompat 兼容性记录 + BAM 系统级执行时间戳；WER：崩溃报告残留。全部在软件卸载后仍保留。"),
     ]));
 
-    // ⑦ 标记入库
-    const mCat = input("观察类别（suspicious / leftover / fingerprint）", "", "suspicious");
+    // ⑥½ 文件夹&注册表扫描（宽泛 → 细扫 → 关联指导）
+    const frDir = input("定向细扫目录（细扫时必填）", "wide");
+    const frBroadBtn = btn("宽泛扫描（文件系统+注册表）", async () => {
+      await run("screener", async () => {
+        const r = await api("screener", "broad_scan");
+        if (bizFail(r)) throw new Error("宽泛扫描失败：" + bizErr(r));
+        lastScanResult = r;
+        output.innerHTML = ""; output.appendChild(table((r && r.items) || [], "宽泛扫描"));
+        return (r && r.summary) || {};
+      }, "宽泛扫描完成");
+    });
+    const frDeepBtn = btn("定向细扫", async () => {
+      if (!frDir.value.trim()) { toast("请填写要细扫的目录路径", "warn"); return; }
+      await run("screener", async () => {
+        const r = await api("screener", "deep_dir_scan", { dir_path: frDir.value.trim() });
+        if (bizFail(r)) throw new Error("细扫失败：" + bizErr(r));
+        lastScanResult = r;
+        output.innerHTML = ""; output.appendChild(table((r && r.items) || [], "细扫分析"));
+        return (r && r.summary) || {};
+      }, "细扫完成");
+    });
+    const frCorrBtn = btn("关联分析与指导", async () => {
+      if (!lastScanResult || !(lastScanResult.items && lastScanResult.items.length)) {
+        toast("请先执行一次扫描（宽泛/细扫/留样均可）再关联", "warn"); return;
+      }
+      await run("screener", async () => {
+        const r = await api("screener", "correlate_findings", { result: lastScanResult });
+        if (bizFail(r)) throw new Error("关联失败：" + bizErr(r));
+        output.innerHTML = ""; output.appendChild(jsonBlock(r));
+        const s = (r && r.summary) || {};
+        return "聚类 " + s.clusters + " 个（高" + s.high + "）";
+      }, "关联完成");
+    });
+    body.appendChild(card("⑥½ 文件夹&注册表扫描（宽泛 → 细扫 → 关联指导）", [
+      formRow([["目录", frDir]]),
+      toolbar([frBroadBtn, frDeepBtn, frCorrBtn], { primary: true }),
+      hint("宽泛：用户目录/下载桌面/TEMP/回收站 + 注册表常驻点位（Run/Winlogon/IFEO/AppInit/服务/Active Setup）"
+         + " + 计划任务无差别列举（宁错杀不放过，带预算上限）；细扫：对单独目录做哈希/熵指纹级深挖并联动注册表与"
+         + " Prefetch 执行痕迹；关联：跨来源聚类成证据组并给出确定性处置指导与总体行动计划。全程只读。"),
+    ]));
+
+    // ⑦ 标记入库（检修 2026-08-27：改为提交真实勾选条目——旧实现把类别输入框
+    // 的字符串当 name/category 写库，每次点击都插入垃圾观察记录并回流经验库）
     const mRisk = select(["高", "中", "低", "无"], "中");
     const mNote = input("备注（可选）");
     const markBtn = btn("标记选中入库", async () => {
+      const sel = pickedRows.v.filter(x => x && typeof x === "object");
+      if (!sel.length) {
+        toast("请先执行扫描，再在「⑧ 结果筛选」里勾选要入库的条目", "warn"); return;
+      }
       await run("screener", async () => {
-        const r = await api("screener", "mark_item",
-          { name: mCat.value || "?", category: mCat.value || "suspicious",
-            risk: mRisk.value, detail: "", note: mNote.value });
-        if (bizFail(r)) throw new Error("标记失败：" + bizErr(r));
-        output.innerHTML = ""; output.appendChild(jsonBlock(r));
-        return "已标记 obs#" + r;
+        let done = 0;
+        for (const it of sel) {
+          const r = await api("screener", "mark_item",
+            { name: it.name || it.target || "(未命名)",
+              category: it.category || "suspicious",
+              risk: it.risk || mRisk.value,
+              detail: String(it.detail || ""),
+              note: mNote.value });
+          if (bizFail(r)) throw new Error("标记失败：" + bizErr(r));
+          done++;
+        }
+        output.innerHTML = ""; output.appendChild(jsonBlock({ marked: done }));
+        return "已入库 " + done + " 条";
       }, "已标记");
     });
-    body.appendChild(card("⑦ 标记入库（人工/AI 分析后追加 observations）", [
-      formRow([["类别/名称", mCat], ["风险", mRisk], ["备注", mNote]]),
+    body.appendChild(card("⑦ 标记入库（先在⑧筛选结果中勾选，再入库 observations）", [
+      formRow([["兜底风险", mRisk], ["备注", mNote]]),
       toolbar([markBtn]),
     ]));
 
-    // ⑧ 结果筛选（同步 GUI 能力）
+    // ⑧ 结果筛选（检修 2026-08-27：原 lastItems 声明后从未赋值，applyFilter 永远
+    // 渲染空表——现直接从 lastScanResult.items 取数；表格改用带勾选的 traceTable，
+    // 勾选结果供⑦标记入库）
     const fCat = select(["全部", "可疑APP", "残留", "留样", "机器指纹", "执行痕迹", "使用历史", "崩溃痕迹"], "全部");
     const fRisk = select(["全部", "高", "中", "低", "无"], "全部");
-    const lastItems = { v: [] };
+    const pickedRows = { v: [] };
+    const currentItems = () =>
+      (lastScanResult && Array.isArray(lastScanResult.items)) ? lastScanResult.items : [];
     const applyFilter = () => {
-      let rows = lastItems.v || [];
+      let rows = currentItems();
+      pickedRows.v = [];
       const catMap = { "可疑APP": "可疑APP", "残留": "残留", "留样": "留样",
         "机器指纹": "机器指纹", "执行痕迹": "执行痕迹", "使用历史": "使用历史",
         "崩溃痕迹": "崩溃痕迹" };
       if (fCat.value !== "全部") rows = rows.filter(x => x.category === catMap[fCat.value]);
       if (fRisk.value !== "全部") rows = rows.filter(x => x.risk === fRisk.value);
-      output.innerHTML = ""; output.appendChild(table(rows, "筛选结果"));
+      output.innerHTML = "";
+      output.appendChild(traceTable(rows, "筛选结果（勾选后在⑦标记入库）", pickedRows));
     };
     fCat.onchange = applyFilter;
     fRisk.onchange = applyFilter;
     body.appendChild(card("⑧ 结果筛选", [
       formRow([["类别", fCat], ["风险", fRisk]]),
-      hint("按类别或风险过滤全部已扫描结果后再标记入库。"),
+      hint("按类别或风险过滤最近一次扫描结果；勾选条目后可到⑦一键标记入库。"),
     ]));
   });
 }

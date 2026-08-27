@@ -16,8 +16,9 @@
   <h1>ReTrace 观察插件</h1>
   <label>中枢端口 <input id="port" type="number" value="8765"></label>
   <small>端口需与后端 config.json → browser.ws_port 一致（默认 8765）。</small>
-  <label>中枢 Token <input id="token" type="text"
-      placeholder="粘贴 config.json → browser.token（后端始终校验，留空将被拒）"></label>
+  <label>中枢 Token <input id="token" type="password" autocomplete="off"
+      placeholder="留空=保留已存；粘贴 config.json → browser.token 覆盖"></label>
+  <small>Token 不再明文回显；只有输入新值才会覆盖保存。</small>
   <button id="save">保存并重连</button>
   <p id="status">状态：未连接</p>
   <button id="snap">当前页面快照</button>

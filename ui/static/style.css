@@ -638,3 +638,59 @@ hr.sep { border: none; border-top: 1px solid var(--border-soft); margin: 18px 0;
   .view-body { max-width: none; }
   .stat-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ============ Markdown 渲染块（AI 结果） ============ */
+.md-block {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  overflow-x: auto;
+}
+.md-block .md-p { margin: 6px 0; }
+.md-block .md-h { margin: 16px 0 8px; color: var(--accent-hi); font-weight: 600; line-height: 1.35; }
+.md-block h1.md-h { font-size: 20px; }
+.md-block h2.md-h { font-size: 17px; }
+.md-block h3.md-h { font-size: 15.5px; }
+.md-block h4.md-h, .md-block h5.md-h, .md-block h6.md-h { font-size: 14px; color: var(--text); }
+.md-block .md-list { margin: 6px 0 6px 22px; }
+.md-block li { margin: 3px 0; }
+.md-block code {
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--surface-3); border: 1px solid var(--border-soft);
+  border-radius: 4px; padding: 1px 5px; color: var(--accent-hi);
+  word-break: break-all;
+}
+.md-block pre.md-code {
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--bg-soft); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-xs); padding: 10px 12px;
+  overflow-x: auto; margin: 8px 0; white-space: pre-wrap; word-break: break-word;
+}
+.md-block pre.md-code code {
+  background: none; border: none; padding: 0; color: var(--text);
+}
+.md-block .md-table {
+  border-collapse: collapse; margin: 10px 0; width: 100%; font-size: 13px;
+}
+.md-block .md-table th, .md-block .md-table td {
+  border: 1px solid var(--border); padding: 6px 10px;
+  text-align: left; vertical-align: top;
+}
+.md-block .md-table th {
+  background: var(--surface-2); color: var(--accent);
+  font-weight: 600; white-space: nowrap;
+}
+.md-block .md-table tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+.md-block .md-quote {
+  border-left: 3px solid var(--accent-dim); padding: 4px 12px; margin: 8px 0;
+  color: var(--text-dim); background: var(--bg-soft);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+}
+.md-block .md-hr { border: none; border-top: 1px dashed var(--border); margin: 12px 0; }
+
+details.raw-json { margin-top: 10px; }
+details.raw-json summary {
+  cursor: pointer; color: var(--text-mute); font-size: 12.5px; user-select: none;
+}
+details.raw-json[open] summary { color: var(--text-dim); margin-bottom: 6px; }

@@ -54,7 +54,11 @@ class Tray(QSystemTrayIcon):
         self._quit_cb = quit_cb
         self.setToolTip("ReTrace 漏洞查找分析反向工具")
 
+        # 检修（2026-08-27）：QSystemTrayIcon.setContextMenu 不转移所有权，
+        # 局部变量会在 __init__ 结束后被 GC 回收（use-after-free）。
+        # 必须由 self 持有引用，保证菜单与动作随托盘同生命周期。
         menu = QMenu()
+        self._menu = menu
         self._act_show = QAction("显示主界面", menu)
         self._act_show.triggered.connect(lambda: show_cb())
         menu.addAction(self._act_show)

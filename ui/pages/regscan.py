@@ -187,14 +187,24 @@ class RegscanPage(QWidget):
 
         def load():
             after = _mod("regscan", "snapshot_watches")()
-            diffs = _mod("regscan", "diff_watches")(before, after or {})
+            # 检修（2026-08-27）：重快照降级/失败时不得把含 error 的 dict 当基线，
+            # 否则与上方快照路径的守卫（172-176）自相矛盾，污染对比起点
+            if not isinstance(after, dict) or after.get("error"):
+                return {"error": "重新快照失败：%s"
+                        % (after.get("error") if isinstance(after, dict) else after)}
+            diffs = _mod("regscan", "diff_watches")(before, after)
             return {"diffs": diffs, "after": after}
 
         def cb(r):
-            if isinstance(r, dict) and r.get("error"):
-                self._show_text(r["error"])
+            if not isinstance(r, dict) or r.get("error"):
+                self._show_text(r.get("error") if isinstance(r, dict) else r)
+                _set_status(self.status, "对比失败", "err")
                 return
-            diffs, after = (r or {}).get("diffs"), (r or {}).get("after")
+            diffs, after = r.get("diffs"), r.get("after")
+            if not isinstance(after, dict) or after.get("error"):
+                # 双保险：异常路径产物绝不清空/污染既有快照
+                _set_status(self.status, "对比结果异常，已保留原快照", "err")
+                return
             self._last_snap = after
             _set_status(self.status, "观察键变化 %d 处" % (len(diffs) if isinstance(diffs, list) else 0), "ok")
             _fill_table(self.table, diffs if isinstance(diffs, list) else [], 500)

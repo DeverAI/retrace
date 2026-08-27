@@ -10,16 +10,32 @@ function setStatus(text, cls) {
 
 (async () => {
   const got = await chrome.storage.local.get(["rt_token", "rt_port"]);
-  if (got.rt_token) tokenEl.value = got.rt_token;
+  // 检修（2026-08-27）：不再把明文 Token 回显进输入框，只给首尾掩码摘要；
+  // 与 Web 控制台同一语义——留空=保留已存，仅输入新值才覆盖。
+  if (got.rt_token) {
+    const t = String(got.rt_token);
+    const mask = t.length > 8 ? t.slice(0, 4) + "…" + t.slice(-4) : "••••";
+    tokenEl.placeholder = "已保存 " + mask + "（留空=保留；输入新值覆盖）";
+  } else {
+    tokenEl.placeholder = "未配置：粘贴 config.json → browser.token";
+  }
   if (got.rt_port) portEl.value = got.rt_port;
   setStatus("已读取配置");
 })();
 
 document.getElementById("save").addEventListener("click", async () => {
-  await chrome.storage.local.set({
-    rt_token: tokenEl.value.trim(),
-    rt_port: parseInt(portEl.value, 10) || 8765
-  });
+  const fresh = tokenEl.value.trim();
+  const patch = { rt_port: parseInt(portEl.value, 10) || 8765 };
+  let tokenChanged = false;
+  if (fresh) {
+    patch.rt_token = fresh;
+    tokenChanged = true;
+  }
+  await chrome.storage.local.set(patch);
+  if (!tokenChanged) {
+    setStatus("端口已保存；Token 未改动", "ok");
+    return;
+  }
   setStatus("已保存，正在重连...", "ok");
 });
 

@@ -105,12 +105,15 @@ def has_err():
 
 
 def clear_err():
-    try:
-        with open(ERR_LOG, "w", encoding="utf-8") as f:
-            f.write("")
-        return True
-    except OSError:
-        return False
+    # 检修（2026-08-27）：与 _write_err 的轮转型 os.replace 共用 _lock，
+    # 否则清空句柄与轮转相撞会造成假性失败/轮转丢失
+    with _lock:
+        try:
+            with open(ERR_LOG, "w", encoding="utf-8") as f:
+                f.write("")
+            return True
+        except OSError:
+            return False
 
 
 def install_hook():

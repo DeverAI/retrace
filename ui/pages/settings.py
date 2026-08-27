@@ -52,8 +52,10 @@ class SettingsPage(QWidget):
         cfg = config.section("ai", {})
         self.base = QLineEdit(cfg.get("base_url", ""))
         self.base.setPlaceholderText("base_url (如 https://api.deepseek.com/v1)")
-        self.key = QLineEdit(cfg.get("api_key", ""))
+        self.key = QLineEdit("")
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        _key_hint = config.mask_secret(cfg.get("api_key", "")) or "未配置密钥"
+        self.key.setPlaceholderText(_key_hint + "｜留空=保留已存密钥；输入 (clear) 清除")
         self.model = QLineEdit(cfg.get("model", ""))
         self.model.setPlaceholderText("model (如 deepseek-chat)")
         c3.layout().addLayout(_row(_label("base_url"), self.base))
@@ -107,6 +109,18 @@ class SettingsPage(QWidget):
         _run_async(self, config.set_switches, cb, **kw)
 
     def save_ai(self):
+        new_key = self.key.text().strip()
+        current_key = config.section("ai", {}).get("api_key", "")
+        # 深度加固（2026-08-27）：写入新明文密钥前显式警示一次。
+        if new_key and new_key.lower() not in ("(clear)", "(清除)") \
+                and new_key != current_key:
+            ans = QMessageBox.question(
+                self, "明文保存确认",
+                "API 密钥将以明文写入本目录 config.json（该文件已被 gitignore，"
+                "不会进版本库）。请确认此渠道可信后继续。\n\n继续保存？")
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
         def cb(r):
             if isinstance(r, dict) and r.get("error"):
                 QMessageBox.warning(self, "保存失败", r["error"])

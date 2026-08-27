@@ -386,6 +386,26 @@ def _run_command(command, reason=""):
                     return {"error": "ipconfig 仅允许查询开关（/all /displaydns），拒绝 %s" % a}
             elif not a.startswith("-"):
                 return {"error": "ipconfig 不接受位置参数: %s" % a}
+    if base == "ping":
+        # 防滥用封顶：仅放行只读探测开关；次数/包长/超时设上限（防 -n 无限刷包）
+        PING_SWITCH_CAPS = {"-n": (1, 20), "-l": (0, 1500), "-w": (1, 10000)}
+        PING_SAFE = set(PING_SWITCH_CAPS) | {"-4", "-6", "-S"}
+        i = 1
+        while i < len(argv):
+            a = argv[i]
+            if a.startswith("-"):
+                if a not in PING_SAFE:
+                    return {"error": "ping 开关不在安全白名单: %s" % a}
+                if a in PING_SWITCH_CAPS:
+                    if i + 1 >= len(argv) or not argv[i + 1].isdigit():
+                        return {"error": "ping %s 需要数字参数" % a}
+                    lo, hi = PING_SWITCH_CAPS[a]
+                    v = int(argv[i + 1])
+                    if not lo <= v <= hi:
+                        return {"error": "ping %s 超限(%d)，允许 %d~%d"
+                                % (a, v, lo, hi)}
+                    i += 1
+            i += 1
     if base == "tshark":
         err = _vet_tshark(argv)
         if err:
@@ -475,3 +495,390 @@ def _remove_file(path, reason=""):
     os.remove(p)
     db.audit("agent.remove_file", "path=%s quarantine=%s" % (p, qdir))
     return {"ok": True, "removed": p, "quarantine": qdir}
+
+
+@tool("recycle_file", "将文件移入系统回收站（可随时从回收站还原；必须确认并说明原因）",
+      RISK_HIGH, ["path", "reason"])
+def _recycle_file(path, reason=""):
+    """移入回收站（FOF_ALLOWUNDO），比硬删多一层系统级撤销保障。
+
+    说明：若目标盘未启用回收站或被策略禁用，该调用会显式失败而非静默硬删；
+    需要确定性删除时请改用 remove_file（带项目内隔离备份）。
+    """
+    import ctypes
+    from ctypes import wintypes
+    p = os.path.abspath(path)
+    from modules import screener
+    if screener._is_protected_fs_path(p):
+        return {"error": "拒绝移除系统/项目目录内的文件: %s" % p}
+    if not os.path.isfile(p):
+        return {"error": "文件不存在: %s" % p}
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND),
+            ("wFunc", ctypes.c_uint),
+            ("pFrom", wintypes.LPCWSTR),
+            ("pTo", wintypes.LPCWSTR),
+            ("fFlags", ctypes.c_uint16),
+            ("fAnyOperationsAborted", wintypes.BOOL),
+            ("hNameMappings", ctypes.c_void_p),
+            ("lpszProgressTitle", wintypes.LPCWSTR),
+        ]
+
+    FO_DELETE = 3
+    flags = (0x40 |   # FOF_ALLOWUNDO —— 进回收站而非物理删除
+             0x10 |   # FOF_NOCONFIRMATION
+             0x04 |   # FOF_SILENT
+             0x400)   # FOF_NOERRORUI
+    op = SHFILEOPSTRUCTW()
+    op.hwnd = None
+    op.wFunc = FO_DELETE
+    op.pFrom = p + "\0"
+    op.pTo = None
+    op.fFlags = flags
+    code = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if code != 0 or op.fAnyOperationsAborted:
+        return {"error": "移入回收站失败(code=%d aborted=%s)"
+                        % (code, bool(op.fAnyOperationsAborted)),
+                "hint": "可能被占用/保护/盘未启用回收站；需要强删请用 remove_file"}
+    db.audit("agent.recycle_file", "path=%s" % p)
+    return {"ok": True, "recycled": p,
+            "hint": "已进回收站，如需找回请在回收站搜索原路径后还原"}
+
+
+# ---------------- 指纹溯源实验组（变量消去法工作流） ----------------
+# 方法论：快照 → 删除/篡改目标字段 → 重启目标软件 → 对比重建值。
+#   重建值 = 原值 → ID 由幸存锚点确定性派生（用 derive_probe 继续找派生链）
+#   重建值 ≠ 原值 → 随机生成或云端下发；再用"篡改后是否被接受"判定文件持久化 vs 服务器侧
+_EXPERIMENT_ROOT = os.path.join(config.ROOT, "backups", "experiments")
+_ID_KEY_HINTS = ("machineid", "machine_id", "deviceid", "device_id", "devdeviceid",
+                 "installationid", "installation_id", "sqmid", "clientid",
+                 "client_id", "userid", "user_id", "uuid", "token", "auth",
+                 "session", "license", "machineguid")
+
+
+def _walk_limited(root, max_depth):
+    for base, dirs, files in os.walk(root):
+        depth = base[len(root):].count(os.sep)
+        if depth > max_depth:
+            dirs[:] = []
+            continue
+        yield base, dirs, files
+
+
+@tool("hunt_string", "在目录树内搜索身份字符串（自动尝试 UTF-8 与 UTF-16LE 双编码），返回命中文件清单——用于定位某 ID 还缓存在哪些文件里", RISK_READ,
+      ["needles", "roots", "max_depth"])
+def _hunt_string(needles, roots=None, max_depth=4):
+    if isinstance(needles, str):
+        needles = [n.strip() for n in needles.split(",") if n.strip()]
+    needles = [str(n) for n in (needles or []) if str(n)]
+    if not needles:
+        return {"error": "必须提供 needles（字符串或逗号分隔列表）"}
+    if not roots:
+        # 默认含主目录根：点目录（~/.qoder 等）是常见盲区
+        roots = [os.path.expanduser("~"),
+                 os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", ""),
+                 os.environ.get("PROGRAMDATA", "")]
+    elif isinstance(roots, str):
+        roots = [roots]
+    hits = {n: [] for n in needles}
+    scanned = 0
+    skip_dirs = {"node_modules", ".git", "__pycache__", "Cache", "Code Cache",
+                 "GPUCache", "CachedData", "DawnGraphiteCache", "DawnWebGPUCache"}
+    for root in roots:
+        root = os.path.abspath(os.path.expandvars(os.path.expanduser(root or "")))
+        if not os.path.isdir(root) or scanned > 20000:
+            continue
+        for base, dirs, files in _walk_limited(root, int(max_depth or 4)):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for f in files:
+                if scanned >= 20000:
+                    break
+                p = os.path.join(base, f)
+                try:
+                    if os.path.getsize(p) > 20 * 1024 * 1024:
+                        continue
+                    with open(p, "rb") as fh:
+                        blob = fh.read()
+                except OSError:
+                    continue
+                scanned += 1
+                low = blob.lower()
+                utf16 = blob.decode("utf-16-le", errors="ignore").lower() \
+                    .encode("utf-8", errors="ignore")
+                for n in needles:
+                    nl = n.lower().encode()
+                    if (nl in low or nl in utf16) and len(hits[n]) < 12:
+                        hits[n].append(p)
+    db.audit("agent.hunt_string", "needles=%d scanned=%d" % (len(needles), scanned))
+    return {"ok": True, "scanned_files": scanned, "hits": hits,
+            "hint": "命中为空说明该字符串不在这些目录的明文/UTF16 内容中——"
+                    "考虑派生生成或仅存服务器侧"}
+
+
+@tool("json_identity_fields", "解析 JSON 文件，列出疑似身份字段的路径与形状预览（令牌类只给哈希前缀，不回显明文）", RISK_READ, ["path"])
+def _json_identity_fields(path):
+    p = os.path.abspath(path)
+    if not os.path.isfile(p):
+        return {"error": "文件不存在: %s" % p}
+    try:
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
+            text = f.read()
+        data = json.loads(text)
+    except Exception as e:
+        return {"error": "JSON 解析失败: %s" % e}
+
+    def shape(v):
+        s = str(v)
+        if len(s) > 24:
+            return "%s...(%d字符, sha:%s)" % (s[:8], len(s),
+                                             hashlib.sha256(s.encode()).hexdigest()[:10])
+        return s
+
+    fields = []
+
+    def dig(obj, prefix=""):
+        if not isinstance(obj, dict):
+            return
+        for k, v in obj.items():
+            kp = k if not prefix else prefix + "." + k
+            # VSCode 族 storage.json 用扁平点号键名：键名本身即 telemetry.machineId
+            probe = kp.lower().replace("_", "")
+            if any(h in probe for h in _ID_KEY_HINTS):
+                if isinstance(v, (str, int, float)):
+                    fields.append({"key_path": kp, "shape": shape(str(v))})
+            elif isinstance(v, dict):
+                dig(v, kp)
+
+    dig(data)
+    db.audit("agent.json_identity_fields", "path=%s fields=%d" % (p, len(fields)))
+    return {"ok": True, "path": p, "fields": fields,
+            "note": "扁平点号键(如 telemetry.machineId)是完整键名而非嵌套层级"}
+
+
+@tool("file_compare", "比较多个文件的大小/sha256/md5/mtime——判定'删除后被重建的值'与'原值'是否相同（相同=确定性派生，不同=随机/云端）", RISK_READ, ["paths"])
+def _file_compare(paths):
+    if isinstance(paths, str):
+        paths = [paths]
+    rows = []
+    for p in paths or []:
+        p = os.path.abspath(os.path.expandvars(p))
+        try:
+            st = os.stat(p)
+            if st.st_size <= MAX_HASH_SIZE:
+                sha, md5, _ent = _file_hashes(p)
+            else:
+                sha, md5 = "", ""
+            rows.append({"path": p, "size": st.st_size,
+                         "mtime": time.strftime("%Y-%m-%d %H:%M:%S",
+                                                time.localtime(st.st_mtime)),
+                         "sha256": sha, "md5": md5})
+        except OSError as e:
+            rows.append({"path": p, "error": str(e)})
+    same = None
+    shas = {r.get("sha256") for r in rows if r.get("sha256")}
+    if len(rows) >= 2 and not any(r.get("error") for r in rows):
+        same = len(shas) == 1
+    verdict = ("全部同值 -> 确定性派生或原样恢复（ID 不是这个文件本身产生的）"
+               if same else
+               "存在差异 -> 随机重建或云端重发" if same is not None else "")
+    return {"files": rows, "identical": same, "verdict": verdict}
+
+
+@tool("derive_probe", "指纹派生源探测：用常见哈希族(md5/sha1/sha256/sha512/uuid5 x 多编码大小写变体)把源字符串派生成候选并与目标 ID 比对；sources 传 'auto' 自动收集本机锚点(MachineGuid/SQM/SID/主机名等)", RISK_READ,
+      ["target", "sources"])
+def _derive_probe(target, sources=None):
+    target = str(target or "").strip().lower()
+    if not target:
+        return {"error": "必须提供 target（待溯源的 ID 值）"}
+
+    def reg_read(path, name):
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path)
+            v, _t = winreg.QueryValueEx(k, name)
+            winreg.CloseKey(k)
+            return str(v).strip()
+        except Exception:
+            return ""
+
+    if isinstance(sources, dict):
+        src_items = list(sources.items())
+    elif isinstance(sources, str) and sources.strip().lower() == "auto":
+        sid_raw = ""
+        try:
+            out = _run_cmd(["whoami", "/user", "/fo", "csv", "/nh"], timeout=15).stdout
+            parts = out.strip().split('","')
+            if len(parts) >= 2:
+                sid_raw = parts[1].strip('"')
+        except Exception:
+            pass
+        src_items = [
+            ("MachineGuid", reg_read(r"SOFTWARE\Microsoft\Cryptography", "MachineGuid")),
+            ("SQM_MachineId", reg_read(r"SOFTWARE\Microsoft\SQMClient", "MachineId")),
+            ("ProductId", reg_read(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+                                   "ProductId")),
+            ("SID", sid_raw),
+            ("hostname", os.environ.get("COMPUTERNAME", "")),
+            ("username", os.environ.get("USERNAME", "")),
+        ]
+    elif isinstance(sources, list):
+        src_items = [("s%d" % i, str(s)) for i, s in enumerate(sources)]
+    else:
+        src_items = [("source", str(sources or ""))]
+    src_items = [(lbl, v) for lbl, v in src_items if v]
+
+    def variants(s):
+        s = str(s)
+        stripped = s.strip("{}").strip()
+        out = {}
+        for label, val in (("原文", s), ("去花括号", stripped),
+                           ("大写", stripped.upper()), ("小写", stripped.lower()),
+                           ("去横线", stripped.replace("-", ""))):
+            for enc in ("utf-8", "utf-16-le"):
+                out["%s|%s" % (label, enc)] = val.encode(enc, errors="ignore")
+        return out
+
+    matches = []
+    tried = 0
+    for lbl, raw in src_items:
+        for vlabel, data_bytes in variants(raw).items():
+            for algo in ("md5", "sha1", "sha256", "sha512"):
+                tried += 1
+                hv = hashlib.new(algo, data_bytes).hexdigest().lower()
+                if hv == target:
+                    matches.append("%s 的 %s(%s)" % (lbl, algo, vlabel))
+        plain = raw.strip("{}")
+        for ns_name, ns in (("dns", uuid.NAMESPACE_DNS), ("oid", uuid.NAMESPACE_OID)):
+            tried += 1
+            try:
+                if str(uuid.uuid5(ns, plain)).lower() == target:
+                    matches.append("%s 的 uuid5_%s" % (lbl, ns_name))
+            except Exception:
+                pass
+    db.audit("agent.derive_probe", "target_len=%d sources=%d tried=%d hit=%d" % (
+        len(target), len(src_items), tried, len(matches)))
+    return {"ok": True, "tried_variants": tried, "matches": matches,
+            "verdict": ("找到派生链: " + "; ".join(matches)) if matches
+            else "常见哈希族未命中 -> 派生源可能是加盐组合/WMI 硬件信息/服务器下发"}
+
+
+@tool("experiment_backup", "实验前快照：把若干文件复制到 backups/experiments/<时间戳>/ 并写 manifest，绝不改动原文件。做任何篡改/删除实验前必须先调用", RISK_CMD,
+      ["paths", "reason"])
+def _experiment_backup(paths, reason=""):
+    if isinstance(paths, str):
+        paths = [paths]
+    if not paths:
+        return {"error": "必须提供 paths"}
+    if len((reason or "").strip()) < 12:
+        return {"error": "必须说明至少 12 字的实验原因"}
+    exp_dir = os.path.join(_EXPERIMENT_ROOT,
+                           time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6])
+    os.makedirs(exp_dir, exist_ok=True)
+    saved = []
+    for p in paths or []:
+        p = os.path.abspath(os.path.expandvars(p))
+        if not os.path.isfile(p):
+            saved.append({"path": p, "error": "不存在"})
+            continue
+        dest = os.path.join(exp_dir, uuid.uuid4().hex[:8] + "_" + os.path.basename(p))
+        shutil.copy2(p, dest)
+        saved.append({"path": p, "backup": dest, "sha256": _file_hashes(p)[0]})
+    manifest = {"created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": reason, "items": saved}
+    mpath = os.path.join(exp_dir, "manifest.json")
+    with open(mpath, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    db.audit("agent.experiment_backup", "dir=%s items=%d" % (exp_dir, len(saved)))
+    return {"ok": True, "experiment_dir": exp_dir, "manifest": mpath, "items": saved}
+
+
+@tool("json_edit_field", "JSON 字段手术（篡改实验核心）：field 支持扁平点号键名(telemetry.devDeviceId)或嵌套路径(a.b.c)；mode=delete 删除该键 / mode=set 设为新值。安全门：同一文件必须先前已 experiment_backup 过", RISK_HIGH,
+      ["path", "field", "mode", "value", "reason"])
+def _json_edit_field(path, field, mode="set", value="", reason=""):
+    p = os.path.abspath(os.path.expandvars(path))
+    if mode not in ("delete", "set"):
+        return {"error": "mode 只能是 delete 或 set"}
+    if mode == "set" and str(value) == "":
+        return {"error": "mode=set 必须提供 value"}
+    if not field:
+        return {"error": "必须提供 field"}
+    if len((reason or "").strip()) < 12:
+        return {"error": "必须说明至少 12 字的实验原因"}
+    # 安全门：查 experiments 备份清单确认此文件做过快照
+    backed = False
+    exp_root = _EXPERIMENT_ROOT
+    if os.path.isdir(exp_root):
+        for dirpath, _dirs, files in os.walk(exp_root):
+            if "manifest.json" not in files:
+                continue
+            try:
+                mf = json.load(open(os.path.join(dirpath, "manifest.json"),
+                                    encoding="utf-8"))
+            except Exception:
+                continue
+            for it in mf.get("items", []):
+                if os.path.normcase(str(it.get("path", ""))) == os.path.normcase(p):
+                    backed = True
+                    break
+            if backed:
+                break
+    if not backed:
+        return {"error": "安全门：该文件尚未 experiment_backup 快照，拒绝篡改。"
+                         "请先调用 experiment_backup"}
+    from modules import screener as _scr
+    if _scr._is_protected_fs_path(p):
+        return {"error": "拒绝修改系统/项目目录内的文件: %s" % p}
+    try:
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
+            text = f.read()
+        data = json.loads(text)
+    except Exception as e:
+        return {"error": "JSON 解析失败: %s" % e}
+    existed_before = field in data
+
+    def set_nested(obj, parts, val):
+        cur = obj
+        for part in parts[:-1]:
+            if not isinstance(cur.get(part), dict):
+                cur[part] = {}
+            cur = cur[part]
+        cur[parts[-1]] = val
+
+    def del_nested(obj, parts):
+        cur = obj
+        for part in parts[:-1]:
+            if not isinstance(cur, dict) or part not in cur:
+                return False
+            cur = cur[part]
+        if isinstance(cur, dict) and parts[-1] in cur:
+            del cur[parts[-1]]
+            return True
+        return False
+
+    changed = False
+    if mode == "delete":
+        if field in data:  # 扁平键优先（VSCode 族 storage.json 形态）
+            del data[field]
+            changed = True
+        else:
+            changed = del_nested(data, field.split("."))
+        if not changed and not existed_before:
+            return {"error": "字段不存在（无论扁平或嵌套）: %s" % field}
+    else:
+        old = data.get(field, "(不存在)")
+        data[field] = value
+        changed = True
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        return {"error": "写盘失败(可从 experiment 目录恢复): %s" % e}
+    db.audit("agent.json_edit_field", "path=%s field=%s mode=%s" % (p, field, mode))
+    return {"ok": True, "path": p, "field": field, "mode": mode,
+            "existed_before": existed_before,
+            "old_shape": ("已删除" if mode == "delete" else str(old)[:40] if mode == "set"
+                          else ""),
+            "hint": "下一步：重启目标软件后再用 file_compare / json_identity_fields "
+                    "对比重建值——同值=派生，异值=随机/云端"}

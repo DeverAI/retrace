@@ -41,7 +41,10 @@ def _settings():
         base = "https://api.openai.com/v1"
     key = (sec.get("api_key") or "").strip()
     if not key:
-        key = os.environ.get(sec.get("api_key_env") or "", "").strip()
+        # 环境变量回退：优先 config 指定的变量名，未指定时默认 RETRACE_API_KEY
+        # （与下方错误提示口径一致；2026-08-27 前此处读不到任何默认名，属文档漂移缺陷）
+        key = os.environ.get(sec.get("api_key_env") or "RETRACE_API_KEY",
+                             "").strip()
     model = (sec.get("model") or sec.get("chat_model") or DEFAULT_MODEL).strip()
     try:
         timeout = float(sec.get("timeout") or 60)

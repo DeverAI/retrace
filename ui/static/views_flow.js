@@ -208,8 +208,13 @@ function vSettings() {
         const base = input("base_url（如 https://api.deepseek.com/v1）", "wide");
         const key = input("api_key", "wide"); key.type = "password";
         const model = input("model（如 deepseek-v4-flash）");
+        // 安全（2026-08-27）：后端不再明文回显密钥，只给掩码预览；
+        // 留空保存＝不修改，输入 (clear)＝显式清除。
         api("config", "get_ai").then(c => {
-          base.value = c.base_url || ""; key.value = c.api_key || ""; model.value = c.model || "";
+          base.value = c.base_url || ""; model.value = c.model || "";
+          key.value = "";
+          key.placeholder = (c.api_key_preview || (c.has_api_key ? "已配置" : "未配置"))
+            + "｜留空=保留已存密钥；输入 (clear) 清除";
         }).catch(e => toast("读取 AI 配置失败: " + e.message, "warn"));
         const saveBtn = el("button", "primary", "保存 AI 配置");
         saveBtn.onclick = async () => {
@@ -319,16 +324,67 @@ function vSettings() {
 function vAgent() {
   const body = viewTemplate("v_agent", "AI 助手", "M10 · AGENT", "lock", "flow", ({ body, output }) => {
     const task = textarea("在此输入任务指令（如：列出可疑进程并标记高风险）", "", 3);
+    const liveLog = el("pre", "agent-live-log");
+    liveLog.style.cssText = "max-height:260px;overflow:auto;white-space:pre-wrap;font-size:12px;";
+    let pollTimer = null;
+    let lastSeq = 0;
+
+    async function pollEvents() {
+      try {
+        const r = await fetch("/api/agent/events?after=" + lastSeq, {
+          headers: { "X-ReTrace": "1" },
+        });
+        const j = await r.json();
+        if (j && j.ok && Array.isArray(j.events) && j.events.length) {
+          for (const e of j.events) {
+            if (e.seq > lastSeq) {
+              lastSeq = e.seq;
+              liveLog.textContent += `[${e.kind}] ${e.text}\n`;
+            }
+          }
+          liveLog.scrollTop = liveLog.scrollHeight;
+        }
+      } catch (_) { /* 轮询失败静默，下轮重试 */ }
+    }
+
+    function startPoll() { stopPoll(); pollTimer = setInterval(pollEvents, 800); pollEvents(); }
+    function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
     const runBtn = btn("发送给 Agent", async () => {
+      lastSeq = 0;
+      liveLog.textContent = "";
+      output.innerHTML = "";
       await run("agent", async () => {
-        const r = await api("agent", "run_task", { task: task.value });
-        if (bizFail(r)) throw new Error("Agent 失败：" + bizErr(r));
-        output.innerHTML = ""; output.appendChild(jsonBlock(r));
-        return r && r.final ? "Agent 完成" : "Agent 完成（无 final 文本）";
+        startPoll();
+        try {
+          const r = await api("agent", "run_task", { task: task.value });
+          if (bizFail(r)) throw new Error("Agent 失败：" + bizErr(r));
+          await pollEvents();
+          // final 是 Markdown 文本：渲染为人话；原始 JSON（含工具调用记录）折叠备查
+          if (r && typeof r.final === "string" && r.final.trim()) {
+            output.innerHTML = "";
+            const head = el("div", "table-bar");
+            head.appendChild(el("span", "count", "== 结果 =="));
+            output.appendChild(head);
+            output.appendChild(mdBlock(r.final));
+            const det = el("details", "raw-json");
+            det.appendChild(el("summary", null, "原始数据（JSON · 含工具调用记录）"));
+            det.appendChild(jsonBlock(r));
+            output.appendChild(det);
+          } else {
+            output.innerHTML = ""; output.appendChild(jsonBlock(r));
+          }
+          return r && r.final ? "Agent 完成" : "Agent 完成（无 final 文本）";
+        } finally {
+          stopPoll();
+        }
       });
     }, false, true);
     body.appendChild(card("① 任务", [task, toolbar([runBtn], { primary: true })]));
-    body.appendChild(card("② 结果", [output,
+    body.appendChild(card("② 实时步骤", [liveLog,
+      hint("运行期间每 0.8s 刷新：模型思考 → 工具调用 → 安全审批 → 执行结果。"),
+    ]));
+    body.appendChild(card("③ 结果", [output,
       hint("Agent 命令经独立审核模型 + 人工弹窗审批；高危工具需逐项确认。"),
     ]));
   });

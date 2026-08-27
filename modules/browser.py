@@ -26,6 +26,7 @@
 """
 import base64
 import hashlib
+import hmac
 import json
 import secrets
 import socket
@@ -37,6 +38,8 @@ from core import config, db, events, logger
 
 MAX_MSG = 1024 * 1024
 _STATE_LOCK = threading.Lock()
+# 帧写出互斥：任何线程发帧都必须持有（防同连接双写交错，见 _send_frame）
+_WS_SEND_LOCK = threading.Lock()
 _clients = []
 _recent_dom = []
 _recent_privacy = []
@@ -130,8 +133,12 @@ def _send_frame(conn, payload, opcode=0x1):
     else:
         header.append(127)
         header += struct.pack(">Q", ln)
+    # 检修（2026-08-27）：读线程 pong 与业务线程 _broadcast 可并发写同一连接，
+    # 两次 sendall 交错会把 RFC6455 帧流打成畸形；统一串行化（本工具消息量级
+    # 极小，全局锁无吞吐顾虑）。
     try:
-        conn.sendall(bytes(header) + payload)
+        with _WS_SEND_LOCK:
+            conn.sendall(bytes(header) + payload)
         return True
     except OSError:
         return False
@@ -183,7 +190,12 @@ def _handle_client(conn, addr):
         if not key:
             conn.close()
             return
-        if _token and _extract_token(request_line) != _token:
+        # 加固（2026-08-27 检修）：浏览器允许任意网页向本机回环发起 WebSocket
+        # 握手（WS 不受 CORS 约束），token 是唯一门禁 → 必须恒时比较，
+        # 防御对 query 串 token 的逐字节时序侧信道。
+        supplied = _extract_token(request_line)
+        if _token and not (isinstance(supplied, str)
+                           and hmac.compare_digest(supplied, _token)):
             try:
                 conn.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
             except OSError:

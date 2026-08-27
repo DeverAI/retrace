@@ -156,7 +156,7 @@ def _write_manifest_atomic(qroot, manifest_payload):
     os.replace(tmp, os.path.join(qroot, MANIFEST_NAME))
 
 
-def _quarantine_fs(path, qroot, manifest):
+def _quarantine_fs(path, qroot, manifest, payload=None):
     p = os.path.abspath(path)
     if _is_protected_fs_path(p):
         return False  # 系统/项目目录拒绝搬移
@@ -173,10 +173,29 @@ def _quarantine_fs(path, qroot, manifest):
     dest = os.path.join(qroot, base)
     if os.path.exists(dest):
         dest = dest + "_" + uuid.uuid4().hex[:6]
-    shutil.move(p, dest)
-    manifest.append({"type": "dir" if is_dir else "file", "target": p,
-                     "backup": dest,
-                     "renamed_from": os.path.basename(p) if base != os.path.basename(p) else ""})
+    # 检修（2026-08-27）：FS 项补齐与注册表路径同款的「先记后删」时序——
+    # 先写 intent 记录（state=pending）并立即落盘，move 成功后原位补全为 done。
+    # 旧实现 manifest.append 在 shutil.move 之后、manifest 落盘又在每项结束时，
+    # 崩溃窗口内文件已搬入 qroot 却无任何记录，成为永久孤儿备份、该项静默不可恢复。
+    entry = {"type": "dir" if is_dir else "file", "target": p,
+             "backup": dest,
+             "renamed_from": os.path.basename(p) if base != os.path.basename(p) else "",
+             "state": "pending"}
+    manifest.append(entry)
+    if payload is not None:
+        _write_manifest_atomic(qroot, payload)
+    try:
+        shutil.move(p, dest)
+    except Exception:
+        # 搬移未发生：撤销 intent 记录，不在 manifest 留死条目（下次写盘时消失）
+        try:
+            manifest.remove(entry)
+        except ValueError:
+            pass
+        raise
+    entry["state"] = "done"
+    if payload is not None:
+        _write_manifest_atomic(qroot, payload)
     return True
 
 
@@ -322,7 +341,7 @@ def cleanup_traces(items, reason=""):
                 continue
             try:
                 if itype in ("file", "dir"):
-                    ok = _quarantine_fs(target, qroot, manifest)
+                    ok = _quarantine_fs(target, qroot, manifest, manifest_payload)
                 elif itype == "registry_value":
                     ok = _cleanup_reg_value(target, qroot, manifest)
                 elif itype == "registry_key":

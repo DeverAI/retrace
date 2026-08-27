@@ -106,15 +106,23 @@ def _rot13(s):
 
 
 def _iter_reg_values(root_name, subkey):
-    """遍历某注册表键的全部值，返回 [(值名, 值字符串, 类型)]。"""
+    """遍历某注册表键的全部值，返回 [(值名, 值字符串, 类型)]。
+
+    检修（2026-08-27）：枚举循环只有 winerror 259(NO_MORE_ITEMS) 视为正常
+    结束；其余 OSError 记档后终止本键——旧行为把任意中断当作遍历完成，
+    后续值被静默漏扫。"""
     import winreg
+    from core import logger as _logger
     try:
         with winreg.OpenKey(_winroot(root_name), subkey, 0, winreg.KEY_READ) as k:
             i = 0
             while True:
                 try:
                     vname, vdata, vtype = winreg.EnumValue(k, i)
-                except OSError:
+                except OSError as e:
+                    if getattr(e, "winerror", None) != 259:
+                        _logger.record_err(
+                            "screener.deep_scan.enumvalue.%s" % root_name, e)
                     break
                 i += 1
                 if vtype in (winreg.REG_NONE, winreg.REG_LINK):

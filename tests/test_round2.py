@@ -120,7 +120,6 @@ class DriftClassifyTest(unittest.TestCase):
         self.assertEqual(rows[self.P], "regenerated_new_value")
 
     def test_legacy_single_dict_history_tolerated(self):
-        from modules.screener.drift import load_state  # noqa: F401
         # load_state 的兼容逻辑经 evolve_state 存取，这里直接验证分类函数
         # 对旧格式（单 dict）也能通过 load_state 的包装——此处测分类端容错
         hist = {self.P: {"sha16": "aaa", "size": 10}}  # 旧格式未包装
@@ -167,7 +166,6 @@ class RunCommandGuardTest(unittest.TestCase):
         self.assertIn("release", r["error"])
 
     def test_ipconfig_safe_allowed_shape(self):
-        from modules.agent.tools import _run_command  # noqa: F401
         # 仅验证校验逻辑（不执行）：构造到执行前的拒绝分支
         r = self._call("ipconfig /displaydns")
         # 本机执行 displaydns 需要管理员；无论成败都不应出现"仅允许查询"守卫错误
@@ -214,7 +212,6 @@ class CleanupManifestReservedNameTest(unittest.TestCase):
     """被隔离物名为 manifest.json 时必须改名，防止恢复清单覆盖原始内容。"""
 
     def test_quarantine_renames_manifest_json(self):
-        import uuid
         from modules.screener import cleanup as sc
         work = tempfile.TemporaryDirectory()
         qroot = tempfile.TemporaryDirectory()

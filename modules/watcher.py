@@ -21,6 +21,7 @@ import time
 
 from core import config, db, events, logger
 from modules import regscan
+from modules.tracking import _process_image_path
 
 SUB_FLAGS = 0
 if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -252,6 +253,26 @@ class Watcher:
                 for c in latest:
                     self._add_event("network", c)
             return
+        # 检修（2026-08-27）：PID 复用/同名进程误归因防线。登记时提供过映像路径的
+        # 目标，每周期对根 PID 用 QueryFullProcessImageNameW 复核映像基名；
+        # 明确不一致（查得到但不是它）视同目标已退出——绝不把无关进程的
+        # 网络连接/DNS 写进时间线证据。查询失败（权限等）返回空串时不判罚，
+        # 保持旧行为，避免把"无法核验"错当"归因失效"。
+        if info.get("exe"):
+            actual = _process_image_path(root_pid)
+            if actual and os.path.basename(actual).lower() != \
+                    os.path.basename(info["exe"]).lower():
+                with self.lock:
+                    exited = name in getattr(self, "_exit_notified", set())
+                if not exited:
+                    with self.lock:
+                        self._exit_notified = \
+                            getattr(self, "_exit_notified", set()) | {name}
+                    self._add_event(
+                        "process",
+                        "%s PID %d 映像不符 (%s)，判定原目标已退出，停止采集"
+                        % (name, root_pid, os.path.basename(actual)))
+                return
         with self.lock:
             self._exit_notified = getattr(self, "_exit_notified", set()) - {name}
         conns = self._connections_for([p["pid"] for p in procs])

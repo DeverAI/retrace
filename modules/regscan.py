@@ -20,10 +20,12 @@ MAX_DEPTH = 12
 MAX_NODES = 120000
 SCAN_SEM = threading.BoundedSemaphore(2)
 # regex 模式防线：注册表值可达数百 KB，恶意/失误的回溯爆炸正则会
-# 单核打满并占死 SCAN_SEM。限制模式长度 + 匹配文本截断 + 拒绝嵌套量词。
+# 单核打满并占死 SCAN_SEM。限制模式长度 + 匹配文本截断 + 确定性拒绝
+# 「量化组内含交替或嵌套量词」——经典指数回溯家族 (a|aa)*x / (a+)* 在此封死；
+# 普通分组 (abc)+ 不受影响。检修 2026-08-27：原规则漏放组内交替形态。
 MAX_REGEX_LEN = 256
 MAX_REGEX_TEXT = 64 * 1024
-_NESTED_QUANT_RE = re.compile(r"\([^()]*[+*][^()]*\)[+*{]")
+_NESTED_QUANT_RE = re.compile(r"\([^()]*(?:[+*{]|\|)[^()]*\)[+*{]")
 
 ROOTS = {
     "HKLM": winreg.HKEY_LOCAL_MACHINE,

@@ -7,6 +7,7 @@
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -33,6 +34,10 @@ def _parse_leaf(value):
     if isinstance(value, bool) or isinstance(value, (int, float)):
         if isinstance(value, bool):
             return ("bool", "布尔值：true/false", None)
+        # 检修（2026-08-27）：NaN/Infinity 无整数投影，int() 会抛 OverflowError
+        # 冲出格式判定契约；先按非有限数值处理
+        if isinstance(value, float) and not math.isfinite(value):
+            return ("number", "非有限数值（NaN/Infinity）", None)
         s = str(int(value))
         if len(s) == 10 and 946684800 <= int(s) <= 4102444800:
             return ("unix_timestamp", "10 位 Unix 秒级时间戳", None)
@@ -170,9 +175,11 @@ def analyze_fingerprint_format(path):
         except Exception as e:
             result["identity_fields"].append({"sqlite_error": str(e)})
         result["rewrite_guidance"] = [
+            "前置红线：任何动作前先把本文件与侧车文件复制备份到 "
+            "backups/quarantine（或经清理端隔离流程），保证可回滚再动手",
             "行级改写：sqlite3 打开后 UPDATE/DELETE 目标行（保持 schema 不变）",
-            "整体重置：删除本文件 + 侧车文件，软件下次启动按自身规则重建（重建=新指纹，"
-            "若目标就是'让软件失忆'则此路径最简单可靠）",
+            "整体重置：确认已有备份后，删除本文件 + 侧车文件，软件下次启动按自身规则"
+            "重建（重建=新指纹，若目标就是'让软件失忆'则此路径最简单可靠）",
             "注意：直接文本编辑器修改会触发 SQLITE_CORRUPT，软件必重建",
         ]
         result["risk"] = "高（直接字节修改必致损坏→软件重建指纹）"
@@ -187,9 +194,13 @@ def analyze_fingerprint_format(path):
 
     if text is not None:
         stripped = text.strip()
-        # 2a) JSON
+        # 2a) JSON（检修：显式拒收 NaN/Infinity 字面量——它们不是合法 JSON，
+        # 让其落入下方 except 走文本/DPAPI 判定，而不是被默认解析器悄悄放行）
         try:
-            obj = json.loads(stripped)
+            def _reject_const(name):
+                raise ValueError("非法 JSON 常量: %s" % name)
+
+            obj = json.loads(stripped, parse_constant=_reject_const)
             if isinstance(obj, dict):
                 result["format"] = "json"
                 result["format_rules"] = [
@@ -207,7 +218,7 @@ def analyze_fingerprint_format(path):
                 result["risk"] = "中（结构合法即可信；值须符合字段规则）"
                 db.audit("screen.format", "path=%s format=json" % path)
                 return result
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         # 2b) DPAPI base64（magic 可能带 ASCII "DPAPI\x01" 前缀，取前 40 字节内搜索）
         try:

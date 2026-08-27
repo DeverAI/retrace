@@ -97,6 +97,22 @@ class ScreenerPage(QWidget):
                                        "再生监测：清理后复查是否被软件原样复活（recreated_same_value = 有云端恢复，本地清理无效）。"))
         lay.addWidget(cdeep)
 
+        # ---- ②⅔ 文件夹&注册表扫描（宽泛 → 细扫 → 关联指导） ----
+        cfr = _card("②⅔ 文件夹&注册表扫描（宽泛 → 细扫 → 关联指导）")
+        self.fr_dir = QLineEdit(); self.fr_dir.setPlaceholderText("定向细扫目录（细扫时必填）")
+        cfr.layout().addLayout(_form_row(("目录", self.fr_dir)))
+        cfr.layout().addLayout(_toolbar(
+            _btn("宽泛扫描（文件系统+注册表）",
+                 lambda: self._scan(_mod("screener", "broad_scan")), primary=True),
+            _btn("定向细扫", self._fr_deep),
+            _btn("关联分析与指导", self._fr_correlate),
+        ))
+        cfr.layout().addWidget(_hint("宽泛：用户目录/下载桌面/TEMP/回收站 + 注册表常驻点位"
+                                     "（Run/Winlogon/IFEO/AppInit/服务/Active Setup）+ 计划任务无差别列举"
+                                     "（宁错杀不放过，带预算上限）；细扫：对单独目录做哈希/熵指纹级深挖并联动注册表与"
+                                     " Prefetch 执行痕迹；关联：跨来源聚类成证据组并给出确定性处置指导。全程只读。"))
+        lay.addWidget(cfr)
+
         # ---- ③ 留样扫描与批量清理（独立大卡） ----
         self._trace_items = []
         ct = _card("③ 留样扫描与批量清理（不依赖安装目录）")
@@ -182,6 +198,46 @@ class ScreenerPage(QWidget):
             QMessageBox.warning(self, "提示", "请输入软件关键词（如 Qoder）")
             return
         self._scan(fn, kw)
+
+    def _fr_deep(self):
+        """定向细扫：校验目录非空后发起目录级深挖（含注册表联动）。"""
+        d = self.fr_dir.text().strip()
+        if not d:
+            QMessageBox.warning(self, "提示", "请输入要细扫的目录路径")
+            return
+        self._scan(_mod("screener", "deep_dir_scan"), d)
+
+    def _fr_correlate(self):
+        """关联分析：把最近一次筛查结果聚类成证据组并输出处置指导。"""
+        if not self._result or not self._items:
+            QMessageBox.warning(self, "提示", "请先执行一次扫描（宽泛/细扫均可）")
+            return
+        _set_status(self.status, "关联分析中…", "run")
+
+        def cb(r):
+            if not isinstance(r, dict) or r.get("error"):
+                _set_status(self.status, "关联失败: %s" % (
+                    r.get("error") if isinstance(r, dict) else r), "err")
+                return
+            lines = ["共 %d 个筛查项 → %d 个关联聚类（高%d 中%d）" % (
+                r["summary"]["items_in"], r["summary"]["clusters"],
+                r["summary"]["high"], r["summary"]["med"]), ""]
+            for c in r.get("clusters", []):
+                lines.append("[%s][%s] %s" % (c["risk"], c["id"], c["label"]))
+                lines.append("  证据: %s" % ("、".join(c["evidence"]) or "无"))
+                for a in c["advice"]:
+                    lines.append("  建议: %s" % a)
+                for p in c.get("sample_paths", [])[:3]:
+                    lines.append("  路径: %s" % p)
+                lines.append("")
+            lines.append("—— 总体行动计划 ——")
+            lines.extend(r.get("plan", []))
+            self.ai_out.setPlainText("\n".join(lines))
+            _set_status(self.status, "关联完成：%d 聚类，高%d" % (
+                r["summary"]["clusters"], r["summary"]["high"]),
+                "err" if r["summary"]["high"] else "ok")
+
+        _run_async(self, _mod("screener", "correlate_findings"), cb, self._result)
 
     def _drift_report(self):
         """指纹再生监测：返回结构与常规扫描不同，走专用渲染而非 _scan。"""

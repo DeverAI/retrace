@@ -14,12 +14,16 @@
 import hashlib
 import json
 import os
+import threading
 
 from core import db
 from modules.screener.ai_tools import scan_ai_tool_traces
 from modules.screener.machine_fp import scan_machine_fingerprints
 
 _STATE_KEY = "fp_drift.state.v1"
+# 检修（2026-08-27）：load→modify→save 临界区互斥（与 cleanup/_plan_lock 同惯例，
+# 防并发两次 commit 交错覆盖丢 history/回退基线）
+_state_lock = threading.Lock()
 
 
 def _file_sig(path):
@@ -121,13 +125,28 @@ def collect_fingerprint_paths(keyword=""):
 def fingerprint_drift_report(keyword="", commit=False):
     """当前扫描 vs 存储基线 → 漂移报告。
 
-    commit=True 时把本次快照写入为新基线，并把当前内容并入 history
+    commit=True 时把本次快照并入基线，并把当前内容并入 history
     （首次调用自动建立基线）。history 只增不减，才能捕捉"删除又回来"。
+    检修（2026-08-27）：
+      1) 关键词过滤视图绝不允许塌缩全局基线——历史缺陷：commit 用本次
+         过滤快照整体替换基线，之后无过滤运行时全部原路径被误判
+         recreated_same_value，监测功能失效。现改为 merge（旧键保留）；
+         且首次运行+keyword+commit 组合直接拒绝（子集没有资格当初始基线）。
+      2) 全程持 _state_lock，消除读改写竞态。
     """
+    with _state_lock:
+        return _drift_report_locked(keyword, bool(commit))
+
+
+def _drift_report_locked(keyword, commit):
     paths = collect_fingerprint_paths(keyword)
     current = build_snapshot(paths)
     baseline, history = load_state()
     first_run = baseline is None
+    if first_run and keyword and commit:
+        return {"ok": False,
+                "error": "首次基线必须全量建立：带关键词的过滤视图不可作为全局基线"
+                         "（请去掉关键词重试，或先无过滤 commit 一次）"}
     if first_run:
         rows = [{"path": p, "status": "new", "baseline_sha": "",
                  "current_sha": s["sha16"]}
@@ -165,7 +184,14 @@ def fingerprint_drift_report(keyword="", commit=False):
                 merged_history[p] = entries[-8:]
             else:
                 merged_history[p] = entries  # 已见过的态：保持原序
-        save_state(current, merged_history)
+        # 基线同样只增不塌缩：过滤视图 commit 时 merge 进全局基线，
+        # 未被本次扫描覆盖的旧条目原样保留（gone 语义依赖它们存在）
+        if keyword:
+            merged_baseline = dict(baseline or {})
+            merged_baseline.update(current)
+        else:
+            merged_baseline = current
+        save_state(merged_baseline, merged_history)
         report["baseline_committed"] = True
     db.audit("screen.drift", "keyword=%s tracked=%d first=%s commit=%s" % (
         keyword or "(all)", len(current), first_run, bool(commit)))

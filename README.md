@@ -30,7 +30,7 @@ ReTrace 是一个以 Windows 为目标的软件漏洞查找分析反向工具，
 ## 2. 运行环境
 
 - 操作系统：Windows（本机 win32）
-- Python：3.13.x（本机实测 3.13.13）
+- Python：3.12 / 3.13 均实测通过（3.12.10、3.13.13）
 - Wireshark：已安装（M1 抓包依赖 `tshark.exe` / `dumpcap.exe`）
 - 数据库：SQLite（标准库 `sqlite3`，单文件 `retrace.db`）
 - 桌面 GUI：PyQt6（唯一第三方大依赖，满足托盘/开机自启/打包）
@@ -62,6 +62,9 @@ pip install PyQt6
   关闭某模块后，GUI/Web 均隐藏其入口，接口调用亦被门禁拦截。
 - **AI 配置 `ai`**：`base_url`（OpenAI 兼容接口地址）、`api_key`、`model`、`timeout`；
   未配置 `api_key` 时 AI 相关功能返回「AI 未配置」提示，不影响其他模块。
+  也支持环境变量回退：`config.ai.api_key_env` 指定变量名，未指定时默认读
+  `RETRACE_API_KEY`。设置页（GUI/Web）读取时只显示掩码预览；保存留空=保留
+  已存密钥、输入 `(clear)`=显式清除。
 - **Agent 审核模型 `agent.reviewer_model`**：为空则复用主模型；另含 `max_steps`、`cmd_timeout` 等。
 
 ---
@@ -77,7 +80,7 @@ python main.py --port 9000     # 指定 Web 端口（默认 8080）
 python main.py --selfcheck     # 环境自检（列出模块开关/tshark/Python 版本后退出）
 python main.py --daemon        # 仅运行持久任务后台守护（无 Web/GUI）
 python main.py --agent "任务"  # 命令行运行 LLM Agent（留空进入交互式）
-python -m unittest discover -s tests -v   # 运行回归测试套件（35 例）
+python -m unittest discover -s tests -v   # 运行回归测试套件（72 例）
 ```
 
 - **桌面 GUI**：PyQt6 主界面，含托盘图标（关闭/最小化进托盘）、开机自启开关。
@@ -104,6 +107,12 @@ python -m unittest discover -s tests -v   # 运行回归测试套件（35 例）
      机制——本地清理无效的铁证，需转向账号侧注销或沙箱隔离。
    - **沙箱对照实验**：`privacy_guard.build_sandbox_test_plan` 生成可直接保存的 .wsb 配置 +
      六步操作清单（宿主基线 → guest 安装运行 → guest 内复扫 → 删除再生探针 → 闭环确认）。
+   - **文件夹&注册表扫描**（宽泛 → 细扫 → 关联指导）：宽泛扫描无差别列举文件系统
+     （用户目录/下载桌面/TEMP/回收站）与注册表常驻点位（Run/Winlogon/IFEO/AppInit/
+     服务/Active Setup/计划任务/启动文件夹）的可疑项，宁错杀不放过且带预算上限；
+     对单独目录可定向细扫（SHA-256/熵指纹级深挖 + 联动注册表与 Prefetch 执行痕迹）；
+     `correlate_findings` 把筛查结果按可疑主体聚类成证据组，输出确定性处置建议与
+     五步总体行动计划（全程只读）。
    - **指纹编码逆向**：`analyze_fingerprint_format` 逆向 SQLite/JSON/DPAPI/UUID/hex 等常见编码，
      输出创建规则与改写指导；`generate_trusted_fingerprint` 生成符合规则的替换值预览（只读），
      避免改写后因格式不合被软件判不信任而重新制造指纹。
@@ -149,7 +158,7 @@ python -m unittest discover -s tests -v   # 运行回归测试套件（35 例）
 │       └── tracking_store.py # 任务/事件/runs/守护租约/批量提交协议
 ├── modules/              # 能力层：13 模块（单文件或包）
 │   ├── screener/         #   M11 筛查工作台包（apps/traces/cleanup/machine_fp/
-│   │                     #   deep_scan/fmt_reverse/guidance/common）
+│   │                     #   deep_scan/fmt_reverse/guidance/fsreg/common）
 │   ├── decompile/        #   M6 反编译包（py/pe/java 解析器 + AI 审计 + 特征库）
 │   └── agent/            #   M10 LLM Agent（agent/executor/reviewer/tools/cli）
 ├── ui/                   # UI 层
@@ -196,7 +205,11 @@ python -m unittest discover -s tests -v   # 运行回归测试套件（35 例）
 - 工具仅用于**本地授权软件分析**；抓包、浏览器注入、反编译均带显式开关与审计日志。
 - Web 控制台仅监听 127.0.0.1，写 API 校验自定义头 `X-ReTrace`、Host/Origin、参数白名单与请求体上限。
 - LLM Agent 工具权限分级：只读工具（扫描/分析/逆向）Agent 自主调用，无需请示；
-  读写工具（命令执行/文件删除/指纹修改/联网）一律须用户确认后执行，无人工通道则自动拒绝。
-  所有读写操作含备份→修改→验证→回滚四步，绝不自动执行。
+  读写工具（命令执行/文件删除/回收站移除/指纹修改/联网）一律须用户确认后执行，
+  无人工通道则自动拒绝。所有写改操作含备份→修改→验证→回滚四步，绝不自动执行。
   仅阻断绕过付费/授权许可的请求。
-- 隐私保护不篡改硬件身份、不注入第三方进程；系统变更批准权不授予 Agent。
+- 密钥面加固（2026-08-27）：Web/GUI 设置接口对 api_key 只回掩码预览绝不回显明文；
+  Agent 审计入库前经 core/redact.py 脱敏（同值同占位、不可还原）；reviewer 对只读
+  工具走静态拦截、模型复核仅服务读写级调用。
+- 隐私保护不篡改硬件身份、不注入第三方进程；系统变更批准权不授予 Agent，
+  注册表一律只读不写。

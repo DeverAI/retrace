@@ -134,8 +134,8 @@ class OpenAIEmbed(BaseIndex):
     def _call(self, texts):
         sec = config.section("ai")
         base = (sec.get("base_url") or "").rstrip("/")
-        key = sec.get("api_key") or os.environ.get(sec.get("api_key_env") or "",
-                                                   "")
+        key = sec.get("api_key") or os.environ.get(
+            sec.get("api_key_env") or "RETRACE_API_KEY", "")
         model = sec.get("embedding_model") or config.section("embedding").get(
             "openai_model") or ""
         if not base or not key:

@@ -268,6 +268,109 @@ function copyText(text) {
   } catch (e) { toast("复制失败: " + e.message, "err"); }
 }
 
+/* ---- Markdown 渲染（AI 结果专用；先整体 HTML 转义再转换，防注入） ---- */
+function _mdInline(s) {
+  return escapeHtml(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<i>$2</i>")
+    .replace(/~~([^~]+)~~/g, "<s>$1</s>");
+}
+function mdToHtml(src) {
+  const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // 围栏代码块
+    if (/^\s*```/.test(line)) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++;
+      out.push('<pre class="md-code"><code>' + escapeHtml(buf.join("\n")) + "</code></pre>");
+      continue;
+    }
+    // 表格：本行 | 分列 且下一行是 |---|---| 分隔行
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length &&
+        /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      const cells = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "")
+        .split("|").map(c => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(cells(lines[i])); i++;
+      }
+      let h = '<table class="md-table"><thead><tr>';
+      head.forEach(c => { h += "<th>" + _mdInline(c) + "</th>"; });
+      h += "</tr></thead><tbody>";
+      rows.forEach(r => {
+        h += "<tr>";
+        head.forEach((_c, ci) => { h += "<td>" + _mdInline(r[ci] || "") + "</td>"; });
+        h += "</tr>";
+      });
+      h += "</tbody></table>";
+      out.push(h);
+      continue;
+    }
+    // 标题
+    const hm = line.match(/^(#{1,6})\s+(.*)$/);
+    if (hm) {
+      const lv = hm[1].length;
+      out.push("<h" + lv + ' class="md-h">' + _mdInline(hm[2]) + "</h" + lv + ">");
+      i++; continue;
+    }
+    // 分隔线
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      out.push('<hr class="md-hr">'); i++; continue;
+    }
+    // 引用块
+    if (/^\s*>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, "")); i++;
+      }
+      out.push('<blockquote class="md-quote">' + _mdInline(buf.join(" ")) + "</blockquote>");
+      continue;
+    }
+    // 列表（单层）
+    const isUl = /^\s*[-*]\s+/.test(line);
+    const isOl = /^\s*\d+[.、)]\s+/.test(line);
+    if (isUl || isOl) {
+      const re = isUl ? /^\s*[-*]\s+(.*)$/ : /^\s*\d+[.、)]\s+(.*)$/;
+      const tag = isUl ? "ul" : "ol";
+      let h = "<" + tag + ' class="md-list">';
+      while (i < lines.length) {
+        const m = lines[i].match(re);
+        if (!m) break;
+        h += "<li>" + _mdInline(m[1]) + "</li>";
+        i++;
+      }
+      h += "</" + tag + ">";
+      out.push(h);
+      continue;
+    }
+    // 空行
+    if (!line.trim()) { out.push(""); i++; continue; }
+    // 段落：连续普通行合并，段内单换行转 <br>
+    const buf = [];
+    while (i < lines.length && lines[i].trim() &&
+           !/^\s*(#{1,6}\s|[-*]\s|\d+[.、)]\s|>|```)/.test(lines[i]) &&
+           !/^\s*\|.*\|\s*$/.test(lines[i])) {
+      buf.push(_mdInline(lines[i]));
+      i++;
+    }
+    out.push('<p class="md-p">' + buf.join("<br>") + "</p>");
+  }
+  return out.join("\n");
+}
+function mdBlock(text) {
+  const wrap = el("div", "md-block");
+  wrap.innerHTML = mdToHtml(text);
+  return wrap;
+}
+
 /* ---- 通用表格 ---- */
 function traceTable(rows, title, selected) {
   const wrap = el("div", "table-block");

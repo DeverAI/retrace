@@ -521,7 +521,17 @@ class _TaskEditDialog(QDialog):
 #  共享助手
 # ============================================================================
 def _save_ai(base, key, model):
-    config.update_section("ai", {"base_url": base, "api_key": key, "model": model})
+    """保存 AI 配置（GUI 通道）。
+
+    密钥语义与 Web 端一致：空提交=保留已存密钥；输入 (clear)/(清除)=显式清除；
+    其余非空覆盖。同时保证 timeout 段不被此入口误清。
+    """
+    current = (config.section("ai", {}) or {}).get("api_key", "")
+    resolved = config.resolve_secret_update(key, current)
+    values = {"base_url": base, "model": model}
+    if resolved is not None and resolved != current:
+        values["api_key"] = resolved
+    config.update_section("ai", values)
 
 
 def _autostart_enabled():

@@ -59,6 +59,7 @@ ALLOWED = {
     "screener.scan_wer_traces", "screener.analyze_fingerprint_format",
     "screener.generate_trusted_fingerprint", "screener.fingerprint_guidance",
     "screener.scan_ai_tool_traces", "screener.fingerprint_drift_report",
+    "screener.broad_scan", "screener.deep_dir_scan", "screener.correlate_findings",
     "privacy_guard.build_sandbox_test_plan",
     # privacy_guard
     "privacy_guard.capabilities", "privacy_guard.protected_rules",
@@ -137,19 +138,39 @@ def _call(module, func, kwargs):
         if func == "save_ai":
             values = {k: kwargs[k] for k in
                       ("base_url", "api_key", "model", "timeout") if k in kwargs}
+            # 密钥统一语义：空提交=保留旧值；输入 (clear)/(清除)=显式清除；
+            # 与掩码回显接口配套，杜绝「空字符串把已存密钥覆掉」的事故。
+            if "api_key" in values:
+                current = (config.section("ai", {}) or {}).get("api_key", "")
+                resolved = config.resolve_secret_update(
+                    values.pop("api_key"), current)
+                if resolved is not None and resolved != current:
+                    values["api_key"] = resolved
             config.update_section("ai", values)
             db.audit("web.save_ai", "base=%s model=%s" % (kwargs.get("base_url", ""), kwargs.get("model", "")))
             return {"ok": True}
         if func == "get_ai":
             sec = config.section("ai", {}) or {}
-            return {"base_url": sec.get("base_url", ""), "api_key": sec.get("api_key", ""),
-                    "model": sec.get("model", ""), "timeout": sec.get("timeout", 60)}
+            key = str(sec.get("api_key", "") or "")
+            # 安全（2026-08-27）：绝不向 HTTP 明文回显完整密钥，
+            # 只给掩码预览 + 是否已配置标志；前端提交空串即视为不修改。
+            return {"base_url": sec.get("base_url", ""),
+                    "api_key": "",
+                    "api_key_preview": config.mask_secret(key),
+                    "has_api_key": bool(key),
+                    "model": sec.get("model", ""),
+                    "timeout": sec.get("timeout", 60)}
         return {"error": "unknown config func"}
     if module == "agent":
         # agent 是包目录，run_task 位于 modules.agent.agent；避免把整个 agent 机器
         # 挂到 modules/agent/__init__ 顶层（保持轻量、按需 import）。
         from modules.agent import agent as agent_mod
         fn = getattr(agent_mod, func)
+        # 加固（2026-08-27）：JSON 通道绝不承载回调句柄。confirm_cb/notify_cb 形参
+        # 若被 JSON 字符串占用会通过签名绑定，执行期炸出 'str' object is not callable
+        # 的裸 500；Web 的进度通道是轮询 /api/agent/events，高危审批一律自动拒绝。
+        kwargs = {k: v for k, v in kwargs.items()
+                  if k not in ("confirm_cb", "notify_cb")}
         try:
             import inspect
             inspect.signature(fn).bind(**kwargs)
@@ -256,6 +277,19 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/ping":
             self._json({"ok": True, "modules": _switches()})
+            return
+        if path == "/api/agent/events":
+            # Agent 实时进度轮询（只读；与写 API 同等来源校验）
+            if not config.enabled("agent"):
+                self._json({"ok": False, "error": "模块已关闭: agent"}, 403)
+                return
+            if not self._request_ok():
+                self._json({"ok": False, "error": "拒绝访问（请求来源校验失败）"}, 403)
+                return
+            from modules.agent import agent as agent_mod
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._json({"ok": True,
+                        "events": agent_mod.live_events(query.get("after", [0])[0])})
             return
         if path.startswith("/api/v1/"):
             if not self._request_ok():
@@ -397,7 +431,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": str(exc), "request_id": request_id}, 400)
         except Exception as exc:
             logger.record_err("web.api.v1", exc)
-            self._json({"ok": False, "error": str(exc), "request_id": request_id}, 500)
+            self._json({"ok": False,
+                        "error": "服务器内部错误（详情见 Err.log）",
+                        "request_id": request_id}, 500)
 
     # ---- PUT / DELETE（Design §12：/api/v1/tasks/{id} 的更新与删除） ----
     def _v1_body_or_json(self, error_template):
@@ -481,9 +517,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": str(e)}, 400)
         except PermissionError as e:
             self._json({"ok": False, "error": str(e)}, 403)
-        except Exception as e:
-            logger.record_err("web.api.%s.%s" % (module, func), e)
-            self._json({"ok": False, "error": str(e)}, 500)
+        except Exception as exc:
+            # 检修（2026-08-27）：500 兜底不再回显 str(e)——内部异常文本可能含
+            # sqlite 错误/路径等细节；对外固定文案，原始异常只进 Err.log
+            rid = uuid.uuid4().hex[:8]
+            logger.record_err("web.api.%s.%s[%s]" % (module, func, rid), exc)
+            self._json({"ok": False,
+                        "error": "服务器内部错误（详情见 Err.log，编号 %s）" % rid}, 500)
 
 
 def _switches():

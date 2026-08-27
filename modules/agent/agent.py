@@ -8,13 +8,48 @@
 无人工通道（confirm_cb=None，如 Web HTTP 调用）时：cmd 被 reviewer deny/不可用即自动拒绝，
 high 一律自动拒绝（默认安全）。
 """
+import collections
 import json
 import re
+import threading
+import time
 import uuid
 
 from core import config, db, logger
 from modules import ai
 from modules.agent import executor, reviewer, tools
+
+# ---- 实时进度事件（进程内环形缓冲，供 GUI/CLI/Web 轮询展示中间步骤）----
+_LIVE = collections.deque(maxlen=300)
+_live_lock = threading.Lock()
+_live_seq = [0]
+
+
+def _live(kind, text):
+    with _live_lock:
+        _live_seq[0] += 1
+        _LIVE.append({"seq": _live_seq[0], "ts": round(time.time(), 3),
+                      "kind": kind, "text": text})
+
+
+def live_events(after=0):
+    """返回 seq > after 的实时事件（Web/GUI 轮询增量拉取）。"""
+    try:
+        after = int(after or 0)
+    except (TypeError, ValueError):
+        after = 0
+    with _live_lock:
+        return [dict(e) for e in _LIVE if e["seq"] > after]
+
+
+def _emit(notify_cb, kind, text):
+    """统一进度出口：写实时缓冲 + 可选回调（GUI/CLI 即时显示）。"""
+    _live(kind, text)
+    if notify_cb:
+        try:
+            notify_cb("[%s] %s" % (kind, text))
+        except Exception:
+            pass
 
 
 def _tool_manifest():
@@ -102,6 +137,7 @@ def run_task(task, max_steps=None, confirm_cb=None, notify_cb=None):
                 {"role": "user", "content": task or ""}]
     transcript = []
     for step in range(max_steps):
+        _emit(notify_cb, "步骤", "%d/%d 请求模型思考中…" % (step + 1, max_steps))
         try:
             res = ai.chat(messages, temperature=0.2, max_tokens=2000,
                           prepend_safety=False)
@@ -121,27 +157,48 @@ def run_task(task, max_steps=None, confirm_cb=None, notify_cb=None):
                              "content": "警告：输出格式无效（%s）。请只输出单个 JSON 工具调用或 final 文本。" % e})
             continue
         if call is None:
+            # 模型按约定输出 {"final": "..."}——解包取纯文本，
+            # 避免把整段 JSON（含 \n 转义）当作答复原文展示
+            try:
+                obj = json.loads(text)
+                if isinstance(obj, dict) and isinstance(obj.get("final"), str):
+                    text = obj["final"]
+            except Exception:
+                pass
             db.audit("agent.done", "task=%.60s final_len=%d" % (task or "", len(text)))
+            _emit(notify_cb, "完成", "任务完成（共 %d 步）" % (step + 1))
             return {"ok": True, "final": text, "steps": step, "transcript": transcript}
         name, args = call
+        risk = tools.TOOLS[name]["risk"] if name in tools.TOOLS else "?"
+        _emit(notify_cb, "调用", "%s 参数=%s" % (
+            name, json.dumps(args, ensure_ascii=False, default=str)[:200]))
         if name not in tools.TOOLS:
             if notify_cb:
                 notify_cb("[警告] 未知工具 %s" % name)
             messages.append({"role": "system",
                              "content": "警告：工具 %s 不存在，请只使用清单中的工具。" % name})
             continue
-        risk = tools.TOOLS[name]["risk"]
         correlation_id = uuid.uuid4().hex
         call_context = {"correlation_id": correlation_id}
         verdict = reviewer.review(name, args, context=call_context)
+        v_text = "%s%s" % ((verdict or {}).get("verdict", "n/a"),
+                           ("（%s）" % verdict["reason"]) if verdict and verdict.get("reason") else "")
         allowed = _approve(confirm_cb, name, args, verdict, risk)
+        if not allowed:
+            src = "用户拒绝" if confirm_cb else "无人工通道，自动拒绝"
+        elif risk == tools.RISK_READ:
+            src = "用户批准" if verdict and verdict.get("verdict") == "deny" else "自动放行（只读）"
+        else:
+            src = "用户批准"
+        _emit(notify_cb, "审批", "%s 审核=%s 来源=%s" % (name, v_text, src))
         if allowed:
             r = executor.call(name, args, context=call_context)
             transcript.append({"tool": name, "args": args, "result": r})
             db.audit("agent.step", "tool=%s risk=%s verdict=%s allowed=1" % (
                 name, risk, (verdict or {}).get("verdict", "n/a")))
-            if notify_cb:
-                notify_cb("[执行] %s 耗时%ss" % (name, r.get("dur", "?")))
+            _emit(notify_cb, "%s" % ("成功" if r.get("ok") else "失败"),
+                  "%s 耗时%ss%s" % (name, r.get("dur", "?"),
+                                    ("：" + str(r.get("error"))[:120]) if r.get("error") else ""))
             messages.append({"role": "user",
                              "content": "[工具 %s 执行结果] %s" % (
                                  name, json.dumps(r, ensure_ascii=False, default=str)[:6000])})
@@ -149,18 +206,23 @@ def run_task(task, max_steps=None, confirm_cb=None, notify_cb=None):
             transcript.append({"tool": name, "args": args, "denied": True})
             db.audit("agent.step", "tool=%s risk=%s verdict=%s allowed=0" % (
                 name, risk, (verdict or {}).get("verdict", "n/a")))
-            if notify_cb:
-                notify_cb("[拒绝] %s 未获批准" % name)
+            _emit(notify_cb, "拒绝", "%s 未获批准，已丢弃该调用" % name)
             messages.append({"role": "system",
                              "content": "安全警告：工具调用 %s 被安全审核或用户拒绝（%s）。"
                                         "请更换策略或直接给出结论，禁止重复相同调用。" % (
                                          name, (verdict or {}).get("reason", "无理由"))})
-        # 防上下文膨胀：裁剪量对齐「工具调用↔结果」配对边界（从索引 2 起成对排列），
-        # 避免留下无主调用或无主结果造成模型幻觉
+        # 防上下文膨胀：裁剪保留最近 ~40 条。起点必须落在「合法历史开头」上——
+        # 工具调用(assistant)或警告(system)——绝不以无主工具结果(user)开头，
+        # 否则模型会把孤儿结果当作已完成步骤产生幻觉（2026-08-27 检修：
+        # 旧奇偶配对算法在夹有 system 警告时错位，已改为按角色前扫对齐）
         if len(messages) > 60:
             k = len(messages) - 39
-            if (k - 2) % 2:
+            while k < len(messages) - 2:
+                role = messages[k].get("role")
+                if role in ("assistant", "system"):
+                    break
                 k += 1
             messages = messages[:2] + messages[k:]
+    _emit(notify_cb, "终止", "达到最大步数 %d，任务中止" % max_steps)
     return {"ok": False, "error": "达到最大步数 %d" % max_steps,
             "steps": max_steps, "transcript": transcript}

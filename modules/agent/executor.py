@@ -1,8 +1,7 @@
 """工具执行引擎：白名单校验、异常捕获、耗时统计、审计。"""
-import json
 import time
 
-from core import db, logger
+from core import logger
 from modules.agent import tools
 
 
@@ -24,10 +23,17 @@ def call(name, args, context=None):
         data = t["run"](**kwargs)
         dur = round(time.time() - t0, 2)
         from core import audit
+        from core.redact import redact_secrets
         outcome = "error" if isinstance(data, dict) and data.get("error") else "success"
-        audit.record("agent.tool", {"tool": name, "duration": dur, "args": kwargs,
-                                    "context": context or {}, "result_type": type(data).__name__,
-                                    "result_error": data.get("error", "") if isinstance(data, dict) else ""}, actor="agent",
+        # 审计载荷脱敏（2026-08-27）：参数中的密钥形状值只存哈希指纹占位
+        audit.record("agent.tool", {"tool": name, "duration": dur,
+                                    "args": redact_secrets(kwargs),
+                                    "context": context or {},
+                                    "result_type": type(data).__name__,
+                                    "result_error": redact_secrets(
+                                        str(data.get("error") or ""))[:200]
+                                    if isinstance(data, dict) and outcome == "error" else ""},
+                     actor="agent",
                      resource="task:%s" % context["task_id"] if context and context.get("task_id") else "agent",
                      outcome=outcome, risk=t["risk"])
         return {"ok": outcome == "success", "tool": name, "data": data,
@@ -36,8 +42,11 @@ def call(name, args, context=None):
         logger.record_err("agent.tool.%s" % name, e)
         try:
             from core import audit
-            audit.record("agent.tool", {"tool": name, "args": kwargs,
-                                        "context": context or {}, "error": str(e)}, actor="agent",
+            from core.redact import redact_secrets
+            audit.record("agent.tool", {"tool": name,
+                                        "args": redact_secrets(kwargs),
+                                        "context": context or {}, "error": redact_secrets(str(e))},
+                         actor="agent",
                          resource="task:%s" % context["task_id"] if context and context.get("task_id") else "agent",
                          outcome="error", risk=t["risk"])
         except Exception:

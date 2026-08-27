@@ -234,26 +234,30 @@ class Capture:
                                          args=(proc,), daemon=True)
         stderr_thread.start()
         self._emit_state("running")
-        normal_stop = False
+        # 检修（2026-08-27）：stop 可能在本线程完成 Popen 赋值前到来——
+        # 此时必须直接进入收尾路径，绝不能带着已置位的 stop_flag 阻塞在读循环上
+        # （旧缺陷：无输出时循环不退、join 超时、特权 tshark 永久泄漏）。
+        normal_stop = self.stop_flag.is_set()
         try:
-            for line in proc.stdout:
-                if self.stop_flag.is_set():
-                    normal_stop = True
-                    break
-                pkt = _parse_line(line, FIELD_NAMES)
-                if pkt is None or pkt.get("num") == "frame.number":
-                    continue
-                view = _packet_view(pkt)
-                with self.lock:
-                    self.recent.append(view)
-                    if len(self.recent) > self.max_cache:
-                        del self.recent[:len(self.recent) - self.max_cache]
-                    self.count += 1
-                now = time.time()
-                if now - self._last_emit[0] >= 1.0 / _EVENT_RATE:
-                    self._last_emit[0] = now
-                    events.bus.publish("packet.captured",
-                                       {"interface": self.name, "packet": view})
+            if not normal_stop:
+                for line in proc.stdout:
+                    if self.stop_flag.is_set():
+                        normal_stop = True
+                        break
+                    pkt = _parse_line(line, FIELD_NAMES)
+                    if pkt is None or pkt.get("num") == "frame.number":
+                        continue
+                    view = _packet_view(pkt)
+                    with self.lock:
+                        self.recent.append(view)
+                        if len(self.recent) > self.max_cache:
+                            del self.recent[:len(self.recent) - self.max_cache]
+                        self.count += 1
+                    now = time.time()
+                    if now - self._last_emit[0] >= 1.0 / _EVENT_RATE:
+                        self._last_emit[0] = now
+                        events.bus.publish("packet.captured",
+                                           {"interface": self.name, "packet": view})
         except (ValueError, OSError) as e:
             if self.stop_flag.is_set():
                 normal_stop = True
@@ -300,8 +304,16 @@ class Capture:
 
     def stop(self):
         self.stop_flag.set()
-        with self.lock:
-            proc = self.proc
+        # 检修（2026-08-27）：start 后立即 stop 时，_run 可能尚未完成 Popen 赋值；
+        # 短重试等赋值落地（或线程自行按 stop_flag 收尾），避免 terminate 被跳过
+        proc = None
+        for _ in range(12):
+            with self.lock:
+                proc = self.proc
+                state_now = self.state
+            if proc is not None or state_now in ("stopped", "error"):
+                break
+            time.sleep(0.1)
         if proc is not None and proc.poll() is None:
             try:
                 proc.terminate()

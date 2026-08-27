@@ -426,3 +426,80 @@
   对象取值包普通对象返回。
 - [AudioBuffer.getChannelData 每次加噪会累积漂移] 活缓冲被反复读取时噪声
   叠加破坏音频。正确做法：WeakSet 去重，仅首读一次性注入确定性微扰。
+
+
+## 27. Agent 安全链实测与密钥面深度加固新增常见错误（2026-08-27）
+
+- [契约测试直连真实持久化把真盘 key 覆空] 测试里对 save_ai 契约未 mock
+  \config.update_section\，一次 \pi_key: ''\ 提交直接落盘抹掉已存密钥；且此
+  缺陷被后续所有依赖 AI 配置的用例连锁放大成『AI 未配置』假象。正确做法：
+  涉持久化的契约测试一律拦截写入口；本轮已在 tests/test_agent_guard 落地
+  setUpModule/tearDownModule 金丝雀（改动即自动还原并判红），永不复发。
+- [ai.py 环境变量名文档漂移] 错误提示承诺 RETRACE_API_KEY，代码却只读
+  \config.ai.api_key_env\（默认为空=永不读取）。修复：未指定时默认读
+  RETRACE_API_KEY，modules/embedding.py 同步同源。
+- [Web get_ai 明文回显完整密钥] HTTP 接口曾原样返回 api_key。修复：改掩码预览
+  api_key_preview + has_api_key；前端输入框不再预填明文。
+- [空提交即清空的危险保存语义] GUI/Web 保存 api_key 曾是『填什么存什么』，
+  留空 = 清除密钥。修复统一语义：留空=保留旧值、输入 (clear)/(清除)=显式清空、
+  其余覆盖（core.config.resolve_secret_update 三方共用）。
+- [GUI 静默明文落盘] 设置页写入新密钥前无任何警示。现弹确认框告知明文入库与
+  gitignore 状态。
+- [read 工具白烧 reviewer 模型调用] REVIEW_PROMPT 规定只读类必然 allow，但主循环
+  对每个 read 步骤仍发一整次外部模型请求买单。分层修复：review() 对 read 只跑静态
+  注入拦截即合成 allow，cmd/high 才进模型通道。附带教学：写脚本桩测试时必须把
+  reviewer 的模型消耗计入槽位，否则 JSON 序列奇偶错位、final 全部失踪。
+- [ping 无次数上限可自刷] run_command 白名单放行 ping 却不限 -n，存在自我刷包面。
+  现仅放行 -n/-l/-w/-4/-6/-S 且 -n≤20、-l≤1500、-w≤10000，未知开关拒绝。
+- [remove_file 硬删缺系统级撤销] 新增 recycle_file（SHFileOperationW+FOF_ALLOWUNDO）
+  移入回收站：失败显式报错不降级硬删；reviewer._static_deny 人工名单同步收录；
+  AGENT_SYS 工具清单经 TOOLS 注册自动携带，无需手改提示词。
+- [审计明文泄漏] executor/reviewer 落审计时原样记录 args。新增 core/redact.py：
+  键名命中（token/secret/api_key…）或值形状命中（品牌令牌/≥40 连续高熵串）即替换为
+  <secret:len:sha10> 占位符，同值同占位可核对不可还原。
+
+
+## 28. 全量检修第三轮：四路盲区扫描确认项修复（2026-08-27）
+
+本轮由四路并行审计（core/db、modules、screener+privacy_guard、ui/extension）
+出线索清单，全部经人工到源码核实后修复，新增 tests/test_maint_round.py
+19 条回归（全套 138 绿）。要点与教训：
+
+- [凭证明文进了扫描预览] machine_fp 把 OpenAI Codex/Claude Code/Cody 等认证文件
+  前 64 字节拼进 detail 展示并入库，违背 ai_tools"绝不回显明文令牌"的自家承诺。
+  修复：token 类别或敏感文件名一律只给 sha256:前缀指纹。教学：新增扫描点时
+  要对着模块群内已有的保密承诺逐条对表，而不是只满足于"能跑"。
+- [过滤视图塌缩全局基线] drift 带关键词 commit 会把子集快照整体替换基线，
+  之后原路径集体误判 recreated_same_value，监测功能报废。修复：keyword 非空时
+  merge 不替换 + 首次基线拒绝带过滤建立；整段读改写加 _state_lock。
+- [托盘 QMenu use-after-free] setContextMenu 不转移所有权，局部菜单被 GC 后
+  右键即崩。修复：self 持有引用。教学：Qt 的 C++ 对象语义永远优先于 Python 直觉。
+- [(a|aa)*x 绕过 ReDoS 守卫] 旧正则只拦组内量词；量化组内交替同样指数爆炸且
+  在 EnumValue 循环内打满 SCAN_SEM。守卫扩为同时拒绝该形态，实测秒拒、合法
+  分组不受影响。
+- [tshark 启动即停泄漏] stop 可能先于 Popen 赋值到来→terminate 被跳过、读取
+  循环无输出不退，特权进程永久残留。双面修：_run 赋值后复查 stop_flag；
+  stop() 短重试等赋值落地。browser 帧写同理补 _WS_SEND_LOCK 防交叉帧损坏；
+  watcher 对登记过 exe 的目标每周期 QueryFullProcessImageNameW 复核根 PID，
+  映像不符判退出绝不采集误归因连接。
+- [FS 隔离 manifest 时序违背自身承诺] 注册表项是先记后删，文件/目录却是
+  move 成功才 append——崩溃窗口产出永久孤儿备份。现 intent(pending) 先落盘、
+  成功置 done、失败撤销条目；恢复端零改动即可还原崩溃窗口内的备份。
+- [异常粒度把权限错误当不存在] traces/deep_scan 多处 except OSError 一律当
+  "枚举完/值为空"，ACL 打不开的 InstallLocation 让真残留漏标。逐点区分
+  FileNotFoundError 与 winerror≠259 的 OSError 并 record_err。
+- [扫描器缺预算] apps.scan_leftover 双遍无上限 os.walk 冻结界面 → 单次遍历+
+  深度≥6 截断+5 万条目预算并如实标注截断；fmt_reverse JSON 分支显式拒收
+  NaN/Infinity 常量、_parse_leaf 加 isfinite 守卫（int(Infinity) 曾冲出契约）。
+- [错误面/文案红线] web_main 两处 500 兜底不再回显 str(e)（改固定文案+编号，
+  原文只进 Err.log）；fsreg autorun 与 fmt_reverse SQLite 重置指导统一补
+  "先隔离备份再动手"前置，与备份→修改→回滚链自洽；regscan GUI 页对比链路
+  补齐降级守卫不再污染对比起点；content.js 吞掉扩展重载后的 context invalidated。
+- [跨进程 config 落盘竞态] 固定 .tmp 名在双实例下可交叉截断提升半截 JSON。
+  tmp 名嵌 PID + replace 共享冲突小步重试三连；logger.clear_err 补进 _lock
+  与轮转共用互斥。
+- [残余已接受项留档] extension token 改首帧 hello 协议需联动 browser 握手/
+  popup/background 三端重写且无法离屏验证，本轮仅完成 popup 掩码化+
+  留空=保留语义（对齐 Web 控制台），查询串握手维持现状——环回绑定+常量时间
+  比较+manifest 无 externally_connectable 的既有边界成立，作为已知取舍记录。
+

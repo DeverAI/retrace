@@ -26,6 +26,8 @@ from modules.screener.drift import (
     classify_paths, fingerprint_drift_report)
 from modules.screener.fmt_reverse import (
     analyze_fingerprint_format, generate_trusted_fingerprint)
+from modules.screener.fsreg import (
+    broad_scan, correlate_findings, deep_dir_scan)
 from modules.screener.guidance import analyze_with_ai, fingerprint_guidance
 from modules.screener.machine_fp import (
     FINGERPRINT_FILE_PATTERNS,  # noqa: F401 (对外兼容)

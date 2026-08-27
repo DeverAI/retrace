@@ -660,6 +660,10 @@ def approve_system_action(token, confirmation="", reason="", approval_context="g
     now = time.time()
     with _plan_lock:
         plan = _plans.get(str(token))
+        # 过期审批能力顺带回收（此前只在查找时弹出，长期驻留属慢性泄漏）
+        for _tk, _ap in list(_approvals.items()):
+            if _ap["expires_at"] < now:
+                _approvals.pop(_tk, None)
         if not plan or plan["expires_at"] < now:
             _plans.pop(str(token), None)
             raise PermissionError("审批计划不存在或已过期")

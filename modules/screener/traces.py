@@ -46,7 +46,11 @@ def _walk_fs(base, kw, items, seen, depth, max_depth, counter, max_items=300):
 
 
 def _scan_fs_traces(keyword, install_dir, install_locations=None):
-    """文件系统留样扫描：精确根（卸载安装路径/install_dir）深扫，用户目录浅扫。"""
+    """文件系统留样扫描：精确根（卸载安装路径/install_dir）深扫，用户目录浅扫。
+
+    额外对主目录根做一层点名（如 ~/.qoder、~/.claude 等点目录）——
+    历史盲区：仅扫 AppData 会漏掉全部主目录根下的厂商点目录。
+    """
     kw = (keyword or "").strip().lower()
     if not kw:
         return []
@@ -59,6 +63,9 @@ def _scan_fs_traces(keyword, install_dir, install_locations=None):
     items, seen, counter = [], set(), [0]
     for base in deep_bases:
         _walk_fs(base, kw, items, seen, 0, 3, counter)
+    home = os.path.expanduser("~")
+    if os.path.isdir(home):
+        _walk_fs(home, kw, items, seen, 0, 1, counter)
     for base in _user_scan_dirs():
         _walk_fs(base, kw, items, seen, 0, 2, counter)
     return items
@@ -76,7 +83,11 @@ def _scan_uninstall_traces(keyword):
                 while True:
                     try:
                         sub = winreg.EnumKey(uninst_key, i)
-                    except OSError:
+                    except OSError as e:
+                        # 检修（2026-08-27）：只有 259(NO_MORE_ITEMS) 是正常遍历结束；
+                        # 其余 OSError（权限抖动等）记档后仍终止本键，绝不静默吞掉
+                        if getattr(e, "winerror", None) != 259:
+                            logger.record_err("screen.traces.enumkey", e)
                         break
                     i += 1
                     try:
@@ -85,12 +96,21 @@ def _scan_uninstall_traces(keyword):
                                 try:
                                     v, _ = winreg.QueryValueEx(k, name)
                                     return str(v).strip()
-                                except OSError:
+                                except FileNotFoundError:
+                                    return ""  # 值不存在：确定性的空
+                                except OSError as e:
+                                    # 检修：ACL/Wow64 视图打不开不是"值不存在"；
+                                    # 记档避免真残留项因读失败被误判为普通条目
+                                    logger.record_err(
+                                        "screen.traces.qval.%s" % name, e)
                                     return ""
                             disp = _get("DisplayName")
                             loc = _get("InstallLocation")
                             pub = _get("Publisher")
-                    except OSError:
+                    except FileNotFoundError:
+                        continue  # 子键刚被卸载删掉：正常消失
+                    except OSError as e:
+                        logger.record_err("screen.traces.openkey", e)
                         continue
                     hay = (disp + " " + pub + " " + loc).lower()
                     if kw and kw not in hay:
@@ -130,8 +150,11 @@ def _scan_uninstall_traces(keyword):
                                 "path": loc, "type": "dir", "target": loc,
                                 "detail": "残留安装目录（主 exe 缺失）: %s" % loc,
                                 "risk": "高", "reason": "安装目录残留", "state": "未处理"})
-        except OSError:
-            continue
+        except FileNotFoundError:
+            pass  # 卸载根键不存在：正常
+        except OSError as e:
+            # 检修：权限拒绝打不开卸载根键时如实记档，不再与"枚举完"混同
+            logger.record_err("screen.traces.uninst_root", e)
     return items
 
 

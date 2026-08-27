@@ -1,5 +1,6 @@
 """筛查工作台——机器指纹文件扫描（已知模式库 + 未知通用检测）。"""
 import glob
+import hashlib
 import os
 import re
 import time
@@ -130,6 +131,39 @@ FINGERPRINT_FILE_PATTERNS = [
 ]
 
 
+_CRED_NAME_HINTS = ("auth", "token", "credential", "secret")
+
+
+def _is_credential_name(filename):
+    """文件名含凭据类提示词即视为敏感目标。"""
+    low = (filename or "").lower()
+    return any(h in low for h in _CRED_NAME_HINTS)
+
+
+def _content_preview(path, credential):
+    """小文件内容预览。
+
+    检修（2026-08-27）红线：凭据类指纹文件绝不回显内容明文——只给 sha256
+    前 12 位指纹（与 ai_tools「身份字段仅哈希预览」同一防线）。旧实现把
+    OpenAI Codex / Claude Code / Cody 等认证文件的前 64 字节原文拼进 detail
+    展示并入库，泄露部分明文密钥，违背 ai_tools 头部的"绝不回显明文令牌"
+    承诺。
+    """
+    try:
+        with open(path, "rb") as f:
+            if credential:
+                h = hashlib.sha256()
+                h.update(f.read(1 << 16))
+                return "<sha256:%s…>" % h.hexdigest()[:12]
+            raw = f.read(64)
+        try:
+            return raw.decode("utf-8", errors="replace").strip()[:60]
+        except Exception:
+            return raw.hex()[:60]
+    except OSError:
+        return ""
+
+
 def scan_machine_fingerprints(keyword=""):
     """通用软件机器指纹文件扫描。
 
@@ -193,19 +227,13 @@ def scan_machine_fingerprints(keyword=""):
                                               time.localtime(int(st.st_mtime)))
                     except OSError:
                         size, mtime = 0, "未知"
-                    # 小文件（<1KB）尝试读取前 64 字节作为预览
+                    # 小文件（<1KB）尝试读取前 64 字节作为预览；
+                    # 凭据类（token 类别或敏感文件名）只给哈希指纹，绝不回显明文
                     preview = ""
                     if os.path.isfile(p) and size <= 4096:
-                        try:
-                            with open(p, "rb") as f:
-                                raw = f.read(64)
-                            # 尝试 UTF-8 解码，失败则 hex
-                            try:
-                                preview = raw.decode("utf-8", errors="replace").strip()[:60]
-                            except Exception:
-                                preview = raw.hex()[:60]
-                        except OSError:
-                            pass
+                        preview = _content_preview(
+                            p, pat.get("category") == "token"
+                            or _is_credential_name(os.path.basename(p)))
                     items.append({
                         "category": "机器指纹",
                         "name": "%s %s" % (pat["product"], pat["file"]),

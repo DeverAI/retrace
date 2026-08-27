@@ -48,25 +48,46 @@ def scan_suspicious_apps():
 
 
 def scan_leftover(install_dir):
-    """残留筛查：主 exe 缺失 / 空目录 / 注册表悬空引用。"""
+    """残留筛查：主 exe 缺失 / 空目录 / 注册表悬空引用。
+
+    检修（2026-08-27）：原实现两遍无深度上限、无条目预算的 os.walk，
+    用户误传大盘根（C:\\ 或挂载点）会双倍全量遍历长时间冻结界面；
+    现合并为单次遍历并沿用 scan_fingerprints 的深度≥6 截断 + 隐藏目录
+    跳过 + 条目预算（超限如实标注"结果可能不完整"）。"""
     if not install_dir or not os.path.isdir(install_dir):
         return {"category": "残留", "summary": {"total": 0, "high": 0, "med": 0,
                 "low": 0, "none": 0}, "items": [], "error": "目录不存在"}
     base = os.path.abspath(install_dir)
     items = []
-    exes = [f for _, _, fs in os.walk(base)
-            for f in fs if f.lower().endswith(".exe")]
+    exes, empty_dirs = [], []
+    visited, truncated = 0, False
+    MAX_VISITED = 50000
+    for root, dirs, files in os.walk(base):
+        depth = root[len(base):].count(os.sep)
+        if depth >= 6:
+            dirs[:] = []
+        else:
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+        visited += len(files)
+        exes.extend(f for f in files if f.lower().endswith(".exe"))
+        if not files and not dirs and os.path.abspath(root) != base:
+            empty_dirs.append(root)
+        if visited > MAX_VISITED:
+            truncated = True
+            break
+    if truncated:
+        items.append({"category": "残留", "name": "(遍历截断)", "path": base,
+                      "detail": "目录条目超过 %d，扫描已提前终止，以下结果可能不完整"
+                                % MAX_VISITED,
+                      "risk": "低", "reason": "预算截断", "state": "未处理"})
     if not exes:
         items.append({"category": "残留", "name": os.path.basename(base),
                       "path": base, "detail": "安装目录存在但未找到主 exe，疑似卸载残留",
                       "risk": "高", "reason": "主exe缺失", "state": "未处理"})
-    for root, dirs, files in os.walk(base):
-        raw_dirs = list(dirs)
-        dirs[:] = [d for d in raw_dirs if not d.startswith(".")]
-        if not files and not raw_dirs and os.path.abspath(root) != base:
-            items.append({"category": "残留", "name": os.path.basename(root),
-                          "path": root, "detail": "空目录（卸载残留）",
-                          "risk": "低", "reason": "空目录", "state": "未处理"})
+    for d in empty_dirs:
+        items.append({"category": "残留", "name": os.path.basename(d),
+                      "path": d, "detail": "空目录（卸载残留）",
+                      "risk": "低", "reason": "空目录", "state": "未处理"})
     # 注册表自启动指向不存在的路径
     try:
         from modules import regscan

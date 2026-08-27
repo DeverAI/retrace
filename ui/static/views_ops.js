@@ -1,5 +1,18 @@
 function vAi() {
   const body = viewTemplate("v_ai", "大模型集成", "M8 · AI", "spark", "analysis", ({ body, output }) => {
+    // AI 文本结果统一渲染：Markdown 进 md-block，原始 JSON 折叠
+    function showAiResult(r) {
+      output.innerHTML = "";
+      if (r && typeof r.text === "string" && r.text.trim()) {
+        output.appendChild(mdBlock(r.text));
+        const det = el("details", "raw-json");
+        det.appendChild(el("summary", null, "原始数据（JSON）"));
+        det.appendChild(jsonBlock(r));
+        output.appendChild(det);
+      } else {
+        output.appendChild(jsonBlock(r));
+      }
+    }
     // ① 状态
     const statusBtn = btn("检查 AI 是否已配置", async () => {
       await run("ai", async () => {
@@ -16,7 +29,7 @@ function vAi() {
         const r = await api("ai", "answer",
           { question: q.value, context: "ReTrace 漏洞分析助手" });
         if (bizFail(r)) throw new Error("提问失败：" + bizErr(r));
-        output.innerHTML = ""; output.appendChild(jsonBlock(r));
+        showAiResult(r);
         return "完成";
       });
     }, false, true);
@@ -27,7 +40,7 @@ function vAi() {
       await run("ai", async () => {
         const r = await api("ai", "analyze", { finding: inText.value });
         if (bizFail(r)) throw new Error("分析失败：" + bizErr(r));
-        output.innerHTML = ""; output.appendChild(jsonBlock(r));
+        showAiResult(r);
         return "完成";
       });
     });
@@ -35,7 +48,7 @@ function vAi() {
       await run("ai", async () => {
         const r = await api("ai", "summarize", { observation: inText.value });
         if (bizFail(r)) throw new Error("摘要失败：" + bizErr(r));
-        output.innerHTML = ""; output.appendChild(jsonBlock(r));
+        showAiResult(r);
         return "完成";
       });
     });
@@ -56,7 +69,7 @@ function vAi() {
       await run("ai", async () => {
         const r = await api("ai", "chat", { messages: messages });
         if (bizFail(r)) throw new Error("对话失败：" + bizErr(r));
-        output.innerHTML = ""; output.appendChild(jsonBlock(r));
+        showAiResult(r);
         return "完成";
       });
     });

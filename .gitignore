@@ -14,3 +14,10 @@ backups/
 
 # 工具
 .opencode/
+
+# 测试文件（含真实 key 测试数据，不公开）
+tests/
+_gui_smoke.py
+
+# 本机路径/哈希敏感文档
+Qoder目录说明.md
