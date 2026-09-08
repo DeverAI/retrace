@@ -882,3 +882,287 @@ def _json_edit_field(path, field, mode="set", value="", reason=""):
                           else ""),
             "hint": "下一步：重启目标软件后再用 file_compare / json_identity_fields "
                     "对比重建值——同值=派生，异值=随机/云端"}
+
+
+# ========== 软件指纹深度排查工具集 ==========
+
+@tool("hunt_software_fingerprint", "动态发现任意软件在机器上留下的所有身份指纹（不依赖模式库）", RISK_READ,
+      ["keyword", "monitor_duration"])
+def _hunt_software_fingerprint(keyword, monitor_duration=0):
+    """对任意软件，自动产出类似 Qoder目录说明.md 级别的完整排查报告。
+    
+    流程：注册表深度扫描 → 文件痕迹发现 → 身份语义提取 → 跨来源关联 → 影响评估。
+    """
+    from modules.screener.identity_hunt import hunt_software_fingerprint
+    return hunt_software_fingerprint(keyword, int(monitor_duration or 0))
+
+
+@tool("deep_registry_scan", "注册表深度扫描（全根键，不止 Software）", RISK_READ,
+      ["keyword"])
+def _deep_registry_scan(keyword):
+    """遍历 HKCU/HKLM/HKU/HKCR 下的关键路径，找含关键词的键值。
+    包括 DeveloperTools、SQMClient、Run、Services 等。
+    """
+    from modules.screener.identity_hunt import deep_registry_scan
+    return deep_registry_scan(keyword)
+
+
+@tool("scan_system_anchors", "系统锚点扫描：不依赖关键词，扫描已知的系统级注册表路径", RISK_READ, [])
+def _scan_system_anchors():
+    """扫描 DeveloperTools、SQMClient、Cryptography 等系统级锚点。
+    这些锚点跨重装存活，是"主犯"级别的标识来源。
+    """
+    from modules.screener.identity_hunt import scan_system_anchors
+    return scan_system_anchors()
+
+
+@tool("extract_identity_semantics", "从文件列表中提取身份标识并分类语义", RISK_READ,
+      ["paths"])
+def _extract_identity_semantics(paths):
+    """不止提取 UUID，还识别登录态、遥测、安装标识等。
+    
+    paths: 文件路径列表（JSON 数组或逗号分隔字符串）。
+    """
+    from modules.screener.identity_hunt import extract_identity_semantics
+    if isinstance(paths, str):
+        paths = json.loads(paths) if paths.startswith("[") else paths.split(",")
+    return extract_identity_semantics(paths)
+
+
+@tool("correlate_identity_sources", "跨来源关联：文件↔注册表，判定谁是主谁是从", RISK_READ,
+      ["file_findings", "reg_findings"])
+def _correlate_identity_sources(file_findings, reg_findings):
+    """判定注册表值与文件内容的关系：注册表是主，文件是从（缓存）。
+    
+    file_findings: extract_identity_semantics 的输出。
+    reg_findings: deep_registry_scan 的输出。
+    """
+    from modules.screener.identity_hunt import correlate_identity_sources
+    if isinstance(file_findings, str):
+        file_findings = json.loads(file_findings)
+    if isinstance(reg_findings, str):
+        reg_findings = json.loads(reg_findings)
+    return correlate_identity_sources(file_findings, reg_findings)
+
+
+@tool("monitor_identity_access", "运行时监控：监控进程对文件/注册表的访问，发现动态身份标识", RISK_READ,
+      ["process_name", "duration"])
+def _monitor_identity_access(process_name, duration=30):
+    """使用 watcher 监控进程行为，发现运行时才读取/写入的身份标识。
+    
+    process_name: 进程名（如 Qoder.exe）。
+    duration: 监控时长（秒）。
+    """
+    from modules.screener.identity_hunt import monitor_identity_access
+    return monitor_identity_access(process_name, int(duration))
+
+
+@tool("assess_identity_impact", "影响评估 + 处理建议", RISK_READ,
+      ["findings", "correlation"])
+def _assess_identity_impact(findings, correlation):
+    """评分逻辑：语义权重 + 跨来源一致性 + 动态访问频率。
+    处理建议：可删/可篡改/谨慎/不动。
+    """
+    from modules.screener.identity_hunt import assess_identity_impact
+    if isinstance(findings, str):
+        findings = json.loads(findings)
+    if isinstance(correlation, str):
+        correlation = json.loads(correlation)
+    return assess_identity_impact(findings, correlation)
+
+
+# ========== 调查案例管理工具集 ==========
+
+@tool("create_investigation_case", "创建新的软件指纹调查案件", RISK_READ,
+      ["software_name", "description"])
+def _create_investigation_case(software_name, description=""):
+    """创建新的调查案件，开始一次完整的软件指纹排查。
+    返回 case_id，后续所有证据/动作/进度都关联到此案件。
+    """
+    from modules.screener.investigation_case import create_case
+    return create_case(software_name, description)
+
+
+@tool("list_investigation_cases", "列出所有调查案件", RISK_READ, ["status"])
+def _list_investigation_cases(status=None):
+    """列出所有调查案件，可按状态过滤（active/closed）。
+    """
+    from modules.screener.investigation_case import list_cases
+    return list_cases(status)
+
+
+@tool("get_investigation_case", "获取案件详情", RISK_READ, ["case_id"])
+def _get_investigation_case(case_id):
+    """获取案件详情，包括证据数量、动作数量、进度等。
+    """
+    from modules.screener.investigation_case import get_case
+    return get_case(int(case_id))
+
+
+@tool("add_investigation_evidence", "添加线索/证据到案件", RISK_READ,
+      ["case_id", "evidence_type", "path", "name"])
+def _add_investigation_evidence(case_id, evidence_type, path, name,
+                                 value_preview="", source="", semantic_type="",
+                                 impact_score=0.5, status="pending"):
+    """添加一条线索/证据到案件。
+    
+    evidence_type: file/registry/process/content
+    source: deep_registry_scan/hunt_string/monitor/manual
+    semantic_type: device_id/machine_id/login_state/telemetry/...
+    impact_score: 0-1 影响力评分
+    status: pending/confirmed/false_positive/cleaned
+    """
+    from modules.screener.investigation_case import add_evidence
+    return add_evidence(int(case_id), evidence_type, path, name, value_preview,
+                        source, semantic_type, float(impact_score), status)
+
+
+@tool("list_investigation_evidence", "列出案件的所有证据", RISK_READ,
+      ["case_id", "status"])
+def _list_investigation_evidence(case_id, status=None):
+    """列出案件的所有证据，可按状态过滤。
+    """
+    from modules.screener.investigation_case import list_evidence
+    return list_evidence(int(case_id), status)
+
+
+@tool("update_evidence_status", "更新证据状态", RISK_READ,
+      ["case_id", "evidence_id", "status"])
+def _update_evidence_status(case_id, evidence_id, status, notes=""):
+    """更新证据状态（pending/confirmed/false_positive/cleaned）。
+    """
+    from modules.screener.investigation_case import update_evidence_status
+    return update_evidence_status(int(case_id), int(evidence_id), status, notes)
+
+
+@tool("record_investigation_action", "记录处理动作及其效果", RISK_READ,
+      ["case_id", "evidence_id", "action_type"])
+def _record_investigation_action(case_id, evidence_id, action_type, action_detail="",
+                                  result="", effect="", snapshot_path=""):
+    """记录对证据的处理动作及其效果。
+    
+    action_type: delete/modify/monitor/backup/restore
+    result: success/failure
+    effect: rebuilt/unchanged/crashed/regenerated
+    """
+    from modules.screener.investigation_case import record_action
+    return record_action(int(case_id), int(evidence_id), action_type, action_detail,
+                         result, effect, snapshot_path)
+
+
+@tool("list_investigation_actions", "列出案件的所有处理动作", RISK_READ, ["case_id"])
+def _list_investigation_actions(case_id):
+    """列出案件的所有处理动作。
+    """
+    from modules.screener.investigation_case import list_actions
+    return list_actions(int(case_id))
+
+
+@tool("update_investigation_progress", "更新排查进度", RISK_READ,
+      ["case_id", "step_name", "status"])
+def _update_investigation_progress(case_id, step_name, status, result_summary=""):
+    """更新案件排查进度。
+    
+    step_name: registry_scan/file_scan/monitor/cleanup/...
+    status: pending/running/done
+    """
+    from modules.screener.investigation_case import update_progress
+    return update_progress(int(case_id), step_name, status, result_summary)
+
+
+@tool("get_investigation_progress", "获取案件排查进度", RISK_READ, ["case_id"])
+def _get_investigation_progress(case_id):
+    """获取案件排查进度。
+    """
+    from modules.screener.investigation_case import get_progress
+    return get_progress(int(case_id))
+
+
+@tool("generate_investigation_report", "生成完整的排查报告", RISK_READ, ["case_id"])
+def _generate_investigation_report(case_id):
+    """生成完整的排查报告（类似 Qoder目录说明.md）。
+    包括：案件摘要、排查进度、证据链、处理效果。
+    """
+    from modules.screener.investigation_case import generate_report
+    return generate_report(int(case_id))
+
+
+@tool("close_investigation_case", "关闭调查案件", RISK_READ,
+      ["case_id", "conclusion"])
+def _close_investigation_case(case_id, conclusion=""):
+    """关闭案件，记录结论。
+    """
+    from modules.screener.investigation_case import close_case
+    return close_case(int(case_id), conclusion)
+
+
+@tool("run_full_investigation", "运行完整的软件指纹调查（一键流程）", RISK_READ,
+      ["software_name", "keyword"])
+def _run_full_investigation(software_name, keyword=None):
+    """一键运行完整的软件指纹调查流程。
+    
+    流程：
+    1. 创建案件
+    2. 注册表深度扫描 → 记录证据
+    3. 系统锚点扫描 → 记录证据
+    4. 文件系统痕迹发现 → 记录证据
+    5. 身份语义提取 → 记录证据
+    6. 影响评估
+    7. 生成报告
+    
+    software_name: 软件名称（用于案件命名）
+    keyword: 搜索关键词（默认同 software_name）
+    """
+    from modules.screener.identity_hunt import (
+        deep_registry_scan, scan_system_anchors, hunt_software_fingerprint
+    )
+    from modules.screener.investigation_case import (
+        create_case, add_evidence, update_progress, generate_report
+    )
+    
+    if keyword is None:
+        keyword = software_name
+    
+    # 阶段 1：创建案件
+    case = create_case(software_name, "自动生成的 %s 指纹调查" % software_name)
+    case_id = case["case_id"]
+    
+    # 阶段 2：注册表深度扫描
+    update_progress(case_id, "registry_scan", "running")
+    reg_results = deep_registry_scan(keyword)
+    for path, hits in reg_results.items():
+        for h in hits:
+            add_evidence(case_id, "registry", path, h["name"], h.get("data", ""),
+                        "deep_registry_scan", "device_id", 0.9 if h.get("is_uuid") else 0.7,
+                        "pending")
+    update_progress(case_id, "registry_scan", "done", "发现 %d 个注册表痕迹" % sum(len(h) for h in reg_results.values()))
+    
+    # 阶段 3：系统锚点扫描
+    update_progress(case_id, "system_anchor_scan", "running")
+    anchors = scan_system_anchors()
+    for path, info in anchors.items():
+        add_evidence(case_id, "registry", path, info["name"], info.get("data", ""),
+                    "scan_system_anchors", "device_id", 1.0, "pending")
+    update_progress(case_id, "system_anchor_scan", "done", "发现 %d 个系统锚点" % len(anchors))
+    
+    # 阶段 4：文件系统痕迹
+    update_progress(case_id, "file_scan", "running")
+    hunt_result = hunt_software_fingerprint(keyword)
+    for f in hunt_result.get("identity_findings", [])[:50]:  # 限前 50 个
+        add_evidence(case_id, "file", f.get("path", ""), f.get("semantic", ""),
+                    f.get("value_preview", ""), "hunt_software_fingerprint",
+                    f.get("semantic", ""), f.get("impact_score", 0.5), "pending")
+    update_progress(case_id, "file_scan", "done", "发现 %d 个文件痕迹" % hunt_result["summary"]["total_identities"])
+    
+    # 阶段 5：生成报告
+    update_progress(case_id, "report_generation", "running")
+    report = generate_report(case_id)
+    update_progress(case_id, "report_generation", "done", "报告已生成")
+    
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "software_name": software_name,
+        "summary": report["summary"],
+        "report": report,
+    }
