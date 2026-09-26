@@ -306,12 +306,48 @@ def _target_identity(task, pids):
     return exe.lower(), os.path.basename(name).lower(), {int(x) for x in pids}
 
 
+_dos_map_cache = {"at": 0.0, "map": {}}
+_dos_map_lock = threading.Lock()
+
+
+def _dos_device_map():
+    r"""\Device\HarddiskVolumeN → 盘符 映射（缓存 60s）。
+
+    Security 4663 的 ProcessName 常为设备形态，不换算就永远等于不了
+    exe_path 的盘符路径——精确文件/注册表归因对配置了 exe 的任务整体失效。
+    """
+    now = time.time()
+    with _dos_map_lock:
+        if _dos_map_cache["map"] and now - _dos_map_cache["at"] < 60:
+            return dict(_dos_map_cache["map"])
+    mapping = {}
+    if os.name == "nt":
+        import ctypes
+        for i in range(26):
+            drive = "%s:" % chr(ord("A") + i)
+            buf = ctypes.create_unicode_buffer(1024)
+            try:
+                if ctypes.windll.kernel32.QueryDosDeviceW(drive, buf, 1024):
+                    mapping[buf.value.lower()] = drive
+            except Exception:
+                break
+    with _dos_map_lock:
+        _dos_map_cache.update({"at": now, "map": mapping})
+    return dict(mapping)
+
+
 def _normalize_image_path(value):
     path = str(value or "").strip().strip('"')
     if path.startswith("\\??\\"):
         path = path[4:]
     if not path:
         return ""
+    low = path.lower()
+    if low.startswith("\\device\\"):
+        for device, drive in _dos_device_map().items():
+            if low.startswith(device + "\\"):
+                path = drive + path[len(device):]
+                break
     return os.path.normcase(os.path.abspath(path)).lower()
 
 
@@ -320,12 +356,17 @@ def _matches_target(record, task, pids):
     exe, name, pid_set = _target_identity(task, pids)
     image = (data.get("Image") or data.get("ProcessName") or "").strip().strip('"')
     image_low = _normalize_image_path(image)
-    event_pid = _int_pid(data.get("ProcessId") or data.get("ProcessID") or
-                         record.get("execution_pid"))
+    # 注意：不能拿 record["execution_pid"] 兜底——那是事件写入进程（EventLog/Sysmon
+    # 服务）的 PID，不是目标进程的 PID。
+    event_pid = _int_pid(data.get("ProcessId") or data.get("ProcessID"))
     if exe:
-        # A configured full path is the identity boundary. Never accept another
-        # binary merely because it has the same basename or a reused PID.
-        return bool(image_low and image_low == exe)
+        if image_low:
+            # A configured full path is the identity boundary. Never accept another
+            # binary merely because it has the same basename or a reused PID.
+            return image_low == exe
+        # 无 Image/ProcessName 的事件（如 DNS-Client 通道）没有二进制身份可验，
+        # 退回 PID 归因；调用侧会把这类事件降级为 correlated，不假称精确。
+        return bool(event_pid and event_pid in pid_set)
     if image_low and name and os.path.basename(image_low).lower() == name:
         return True
     return bool(event_pid and event_pid in pid_set)
@@ -419,12 +460,12 @@ def _security_event(record):
         "security", "info" if operation == "read" else "medium")
 
 
-def _downgrade_identity(event):
+def _downgrade_identity(event, reason=None):
     event = dict(event)
     payload = dict(event.get("data") or {})
     payload["confidence"] = "correlated"
-    payload["warning"] = ("任务未配置完整 exe 路径，仅按进程名/PID 关联；"
-                          "同名进程或 PID 复用可能造成误报")
+    payload["warning"] = reason or ("任务未配置完整 exe 路径，仅按进程名/PID 关联；"
+                                    "同名进程或 PID 复用可能造成误报")
     event["data"] = payload
     stable = json.dumps({"type": event.get("type"), "detail": event.get("detail"),
                          "data": payload}, ensure_ascii=False, sort_keys=True, default=str)
@@ -506,6 +547,12 @@ def exact_events(task, pids, checkpoint, caps=None):
                 if event:
                     if not task.get("exe_path"):
                         event = _downgrade_identity(event)
+                    elif not _record_has_image(record):
+                        # exe 任务下经 PID 归因的无映像事件不得假称 exact。
+                        event = _downgrade_identity(
+                            event,
+                            "事件源缺少进程映像字段，按 PID 关联目标进程；"
+                            "PID 复用可能造成误报")
                     out.append(event)
             cursor = maximum
             if len(records) < MAX_EVENTS:
@@ -521,13 +568,22 @@ def exact_events(task, pids, checkpoint, caps=None):
     return out, updates
 
 
+def _record_has_image(record):
+    data = record.get("data") or {}
+    return bool((data.get("Image") or data.get("ProcessName") or "").strip())
+
+
 def dns_snapshot():
     try:
         proc = _run_bytes(["ipconfig", "/displaydns"], 20)
-        text = _decode(proc.stdout)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.record_err("activity.dns_cache", exc)
         return None  # 采集失败：调用方必须保留旧基线，不得当作"空缓存"
+    if proc.returncode != 0:
+        logger.record_err("activity.dns_cache",
+                          RuntimeError("ipconfig /displaydns exit %d" % proc.returncode))
+        return None
+    text = _decode(proc.stdout)
     names = []
     for raw in text.splitlines():
         line = raw.strip()
@@ -538,6 +594,16 @@ def dns_snapshot():
             value = line.split(":", 1)[1].strip().rstrip(".").lower()
             if value:
                 names.append(value)
+    if not names:
+        # Dnscache 停止/被策略禁用时 ipconfig 常 exit 0 只打错误文案：
+        # "零记录 + 失败文案" ≠ 空缓存。当失败处理（保基线），否则缓存恢复
+        # 后一轮内每个条目都会爆出假"APP 运行期间出现 DNS 缓存记录"。
+        low_all = text.lower()
+        if any(marker in low_all for marker in
+               ("could not display", "无法显示", "无法查询", "failed to")):
+            logger.record_err("activity.dns_cache",
+                              RuntimeError("ipconfig /displaydns 报告无法读取 DNS 缓存"))
+            return None
     return sorted(set(names))[:5000]
 
 
@@ -656,7 +722,11 @@ def correlated_events(task, pids, checkpoint, use_dns=True, use_registry=True):
                                                "dns_cache", "info", "correlated"))
             updates["dns_cache"] = current
     last_registry = float(checkpoint.get("registry_checked_epoch") or 0)
-    if use_registry and time.time() - last_registry >= 30:
+    # 注册表关联匹配依赖 exe/进程名（键路径/值内容含该名才命中）。pid-only 任务
+    # 没有名字锚点：current_reg 必为空，直接 diff 会把旧基线整批假报"消失"
+    # 并清空基线——跳过对比，基线原样保留。
+    registry_matchable = bool(task.get("exe_path") or task.get("process_name"))
+    if use_registry and registry_matchable and time.time() - last_registry >= 30:
         snapshot = registry_snapshot(task)
         if isinstance(snapshot, dict) and "values" in snapshot:
             current_reg = snapshot.get("values") or {}

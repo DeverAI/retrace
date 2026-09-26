@@ -35,7 +35,12 @@ def analyze_java(path):
         cp = {}
         pos = 10
         warn = None
-        for idx in range(1, cp_count):
+        # 检修（2026-09-14）：改 while 手动推进——旧 for-range 循环里的 `idx += 1`
+        # 每轮被 range 重新绑定，long/double 幻影槽从未真正跳过：下一个真实条目
+        # 被解析进 idx+1，此后全部条目错位一格、循环总轮数虚增，最终越过常量池
+        # 边界把 access_flags/字段表字节当 CP 条目（serialVersionUID=1L 即触发）。
+        idx = 1
+        while idx < cp_count:
             if pos >= len(data):
                 warn = "常量池截断 at %d" % pos
                 break
@@ -70,7 +75,7 @@ def analyze_java(path):
                 pos += 8
                 if idx + 1 < cp_count:
                     cp[idx + 1] = ("wide",)
-                    idx += 1
+                    idx += 1  # 幻影槽真实跳过：下一真实条目从 idx+2 继续
             elif tag == 15:
                 if pos + 3 > len(data):
                     warn = "mh 越界"; break
@@ -78,6 +83,7 @@ def analyze_java(path):
             else:
                 warn = "未知常量池 tag=%d at %d" % (tag, pos - 1)
                 break
+            idx += 1
         if warn:
             result["info"]["parse_warn"] = warn
         access_flags = struct.unpack_from(">H", data, pos)[0]

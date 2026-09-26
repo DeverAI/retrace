@@ -12,6 +12,7 @@
   extract_rules(observations)  规则提炼
   answer(question, context)    上下文问答
 """
+import http.client
 import json
 import os
 import urllib.error
@@ -82,7 +83,11 @@ def chat(messages, temperature=0.2, max_tokens=1500, model=None, prepend_safety=
     started = time.time()
     try:
         data = _post(base + "/chat/completions", body, key, timeout)
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, OSError, ValueError,
+            http.client.HTTPException) as e:
+        # 检修（2026-09-14）：IncompleteRead（HTTPException 子类）非 OSError——
+        # 网关提前断连时 chat() 会抛裸异常而非业务错误 dict（chat_stream 已修，
+        # 非流式路径同步补齐）。
         logger.record_err("ai.chat", e)
         _audit_call(base, model, messages, started, "error", str(e))
         return {"ok": False, "error": "AI 调用失败: %s" % e}

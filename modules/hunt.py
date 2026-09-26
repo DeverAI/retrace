@@ -91,6 +91,12 @@ def collect_evidence(obs_id):
 
     def _decompile_block():
         res = decompile.analyze(agent.get("path", ""))
+        # 检修（2026-09-14）：解析失败信息在 info["error"]（顶层无 error 键）——
+        # 旧判断把损坏文件记成"评分: 高危0 中危0 可疑串0"假阴性证据。
+        info = res.get("info") or {}
+        if info.get("error"):
+            return {"type": "decompile.error",
+                    "detail": "解析失败: %s" % info["error"]}
         if "error" not in res:
             return {"type": "decompile", "detail": "评分: 高危%d 中危%d 可疑串%d"
                     % (res["score"]["high"], res["score"]["med"],
@@ -155,14 +161,36 @@ def finish_observation(obs_id, risk="低", category="其他", mark="", conclusio
     risk = str(risk or "低")
     db.update_observation(obs_id, status="marked", risk=risk,
                           category=category, mark=mark, conclusion=conclusion)
+    # 检修（2026-09-14）：观察结束即停采集——start_hunt 启动的 "hunt" 抓包
+    # （tshark 子进程）与 watcher 轮询此前没有停止路径，会一直运行到应用退出，
+    # 子进程滞留且在用户不知情下持续收集流量（隐私面扩大）。
+    try:
+        pcap.stop_capture(name="hunt")
+    except Exception as e:
+        logger.record_err("hunt.finish.pcap_stop", e)
+    try:
+        aid = obs.get("agent_id")
+        rec = db.get_agent(aid) if aid else None
+        # 检修（2026-09-19）：注册键是 start_hunt 用的 basename(path)，
+        # 不是 agent 显示名——用 name 时 remove_target 恒 False，
+        # watcher 轮询线程永不随最后一个目标停止。
+        target = os.path.basename(str((rec or {}).get("path") or ""))
+        w = watcher.get_watcher()
+        if target and w.remove_target(target) and not w.targets:
+            watcher.stop()  # 最后一个目标移除后停掉轮询线程
+    except Exception as e:
+        logger.record_err("hunt.finish.watcher_stop", e)
     text = " ".join((category or "", risk or "", mark or "", conclusion or ""))
     if mark.strip():
         db.add_knowledge(category or "未分类",
                          "%s 观察经验" % (mark[:24]),
                          text[:300],
                          ", ".join(_keywords(text[:600])), _risk_weight(risk), 1)
-        embedding.remember(text[:600], {"cat": category, "risk": risk,
-                                        "obs": obs_id})
+        try:
+            embedding.remember(text[:600], {"cat": category, "risk": risk,
+                                            "obs": obs_id})
+        except Exception as e:
+            logger.record_err("hunt.finish.remember", e)
     db.audit("hunt.finish", "obs=%d risk=%s cat=%s" % (obs_id, risk, category))
     events.bus.publish("hunt.finished", {"observation_id": obs_id})
     return {"ok": True}

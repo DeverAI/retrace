@@ -24,43 +24,43 @@ function vOverview() {
   api("config", "switches").then(s => {
     const ent = Object.entries(s.switches || {}).filter(([k]) => k !== "ui");
     const on = ent.filter(([, x]) => x).length;
-    c1.replaceWith(statCard(on + " / " + ent.length, "模块开关", "layers",
+    c1.replaceWith(statCard("模块开关", on + " / " + ent.length, "layers",
       on === 0 ? "warn" : null, () => goto("v_settings")));
-  }).catch(() => c1.replaceWith(statCard("不可用", "模块开关", "layers", "err", () => goto("v_settings"))));
+  }).catch(() => c1.replaceWith(statCard("模块开关", "不可用", "layers", "err", () => goto("v_settings"))));
 
   const c2 = pend("观察目标", "target"); grid.appendChild(c2);
   api("hunt", "list_agents").then(rows => {
     const n = (rows || []).length;
-    c2.replaceWith(statCard(String(n), "观察目标 (hunt)", "target",
+    c2.replaceWith(statCard("观察目标 (hunt)", String(n), "target",
       n === 0 ? "warn" : null, () => goto("v_hunt")));
-  }).catch(() => c2.replaceWith(statCard("不可用", "观察目标 (hunt)", "target", "err", null)));
+  }).catch(() => c2.replaceWith(statCard("观察目标 (hunt)", "不可用", "target", "err", null)));
 
   const c3 = pend("浏览器扩展", "window"); grid.appendChild(c3);
   api("browser", "status").then(s => {
     const online = !!(s && (s.connected || s.online || s.ok));
-    c3.replaceWith(statCard(online ? "在线" : "离线", "浏览器扩展", "window",
+    c3.replaceWith(statCard("浏览器扩展", online ? "在线" : "离线", "window",
       online ? null : "warn", () => goto("v_browser")));
-  }).catch(() => c3.replaceWith(statCard("未连接", "浏览器扩展", "window", "warn", () => goto("v_browser"))));
+  }).catch(() => c3.replaceWith(statCard("浏览器扩展", "未连接", "window", "warn", () => goto("v_browser"))));
 
   const c4 = pend("大模型", "spark"); grid.appendChild(c4);
   api("ai", "configured").then(c => {
-    c4.replaceWith(statCard(c ? "已配置" : "未配置", "大模型 (AI)", "spark",
+    c4.replaceWith(statCard("大模型 (AI)", c ? "已配置" : "未配置", "spark",
       c ? null : "warn", () => goto("v_ai")));
-  }).catch(() => c4.replaceWith(statCard("未知", "大模型 (AI)", "spark", "warn", null)));
+  }).catch(() => c4.replaceWith(statCard("大模型 (AI)", "未知", "spark", "warn", null)));
 
   const c5 = pend("守护进程", "clock"); grid.appendChild(c5);
   api("tracking", "daemon_status").then(d => {
     const live = !!(d && d.running);
-    c5.replaceWith(statCard(live ? "在线" : "离线", "守护进程", "clock",
+    c5.replaceWith(statCard("守护进程", live ? "在线" : "离线", "clock",
       live ? null : "err", () => goto("v_tracking")));
-  }).catch(() => c5.replaceWith(statCard("未知", "守护进程", "clock", "warn", null)));
+  }).catch(() => c5.replaceWith(statCard("守护进程", "未知", "clock", "warn", null)));
 
   const c6 = pend("隐私保护", "shield"); grid.appendChild(c6);
   api("privacy_guard", "capabilities").then(c => {
     const ok = !!c;
-    c6.replaceWith(statCard(ok ? "就绪" : "未配置", "隐私保护", "shield",
+    c6.replaceWith(statCard("隐私保护", ok ? "就绪" : "未配置", "shield",
       ok ? null : "warn", () => goto("v_privacy")));
-  }).catch(() => c6.replaceWith(statCard("不可用", "隐私保护", "shield", "warn", null)));
+  }).catch(() => c6.replaceWith(statCard("隐私保护", "不可用", "shield", "warn", null)));
 
   body.appendChild(section("模块开关"));
   const chips = el("div", "chip-grid"); body.appendChild(chips);

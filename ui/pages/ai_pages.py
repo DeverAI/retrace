@@ -50,6 +50,10 @@ class AiHelperPage(QWidget):
         lay.addWidget(c3, 1)
 
     def _run(self):
+        # 检修（2026-09-14）：重入守卫——回车键绕过禁用按钮，任务运行中再按
+        # 回车会并发第二个 run_task（审批弹窗交叉、输出交错、读写工具重复执行）。
+        if getattr(self, "_running", False):
+            return
         task = self.input.text().strip()
         if not task:
             return

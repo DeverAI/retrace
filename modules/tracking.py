@@ -5,6 +5,7 @@ from ctypes import wintypes
 import hashlib
 import io
 import json
+import locale
 import os
 import subprocess
 import threading
@@ -16,6 +17,9 @@ from core.coerce import strict_bool as _to_bool
 
 SUB_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 MAX_SCAN_FILES = 1200
+# 系统工具（tasklist/netstat）按控制台代码页输出；强制 utf-8 会让中文进程名
+# 解码成 U+FFFD，导致按名匹配整体失效（FreqErr §11 subprocess 编码坑）。
+_TOOL_ENC = locale.getpreferredencoding(False) or "utf-8"
 
 
 def _now():
@@ -23,7 +27,7 @@ def _now():
 
 
 def _run(argv, timeout=20):
-    return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+    return subprocess.run(argv, capture_output=True, text=True, encoding=_TOOL_ENC,
                           errors="replace", timeout=timeout, creationflags=SUB_FLAGS)
 
 
@@ -97,8 +101,15 @@ def _process_image_path(pid):
 
 
 def _file_snapshot(paths):
+    """快照观察目录；返回 (snap, truncated)。
+
+    truncated=True 表示扫描被预算截断：调用方必须把它当"不完整视图"——
+    跳过"消失"判定并把旧基线合并写回（对齐注册表侧 FreqErr §8 同坑修复），
+    否则窗口外的旧文件会整批假报"文件消失"、窗口滑动后再假报"新增"。
+    """
     snap = {}
     count = 0
+    truncated = False
     for base in paths:
         base = os.path.abspath(os.path.expandvars(base))
         if not os.path.isdir(base):
@@ -107,33 +118,50 @@ def _file_snapshot(paths):
             rel_depth = os.path.relpath(root, base).count(os.sep)
             if rel_depth >= 3:
                 dirs[:] = []
-            dirs[:] = [d for d in dirs if not d.startswith(".")][:80]
+            visible_dirs = [d for d in dirs if not d.startswith(".")]
+            if len(visible_dirs) > 80:
+                # 检修（2026-09-19）：目录裁剪是不稳定窗口（os.walk 顺序跨轮
+                # 可能变化）——被裁掉的子树等同不完整视图，必须置 truncated
+                # 走"跳过消失判定+合并基线"路径，否则滑出窗口的旧文件假报消失。
+                truncated = True
+            dirs[:] = visible_dirs[:80]
             for name in files:
                 try:
                     path = os.path.join(root, name)
                     st = os.stat(path)
                     snap[path] = [int(st.st_mtime_ns), int(st.st_size)]
                 except OSError:
+                    # stat 失败（AV 独占/竞态）同样构成不完整视图（§8 同坑）
+                    truncated = True
                     continue
                 count += 1
                 if count >= MAX_SCAN_FILES:
-                    return snap
-    return snap
+                    truncated = True
+                    return snap, truncated
+    return snap, truncated
 
 
 def _hash_executable(path):
     if not path or not os.path.isfile(path):
         return ""
-    size = os.path.getsize(path)
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return ""
     if size > 512 * 1024 * 1024:
         return "oversize:%s" % size
     digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        while True:
-            block = stream.read(1 << 20)
-            if not block:
-                break
-            digest.update(block)
+    try:
+        with open(path, "rb") as stream:
+            while True:
+                block = stream.read(1 << 20)
+                if not block:
+                    break
+                digest.update(block)
+    except OSError:
+        # TOCTOU（exe 被替换/AV 独占）：按"本轮不可用"处理走 binary.missing，
+        # 不让单个文件把整轮采集打成 error 退避。
+        return ""
     return digest.hexdigest()
 
 
@@ -174,7 +202,9 @@ def collect_once(task):
     """Collect one deterministic snapshot and return delta events + checkpoint."""
     checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
     procs = _processes()
-    pids = _target_pids(task, procs)
+    # 排序后比较/入库：tasklist 枚举顺序不稳定，顺序翻转会让事件指纹变化，
+    # DB 去重失效、同一状态反复入库。
+    pids = sorted(_target_pids(task, procs))
     events_out = []
     if checkpoint.get("activity_backlog"):
         # During Event Log catch-up, avoid re-hashing large binaries and repeating
@@ -190,7 +220,7 @@ def collect_once(task):
         new_checkpoint.update(activity_checkpoint)
         new_checkpoint["collected_at"] = _now()
         return activity_events, new_checkpoint
-    old_pids = checkpoint.get("pids") or []
+    old_pids = sorted(checkpoint.get("pids") or [])
     if pids != old_pids:
         if pids:
             events_out.append(_event("process", "目标进程正在运行: %s" % pids,
@@ -243,12 +273,15 @@ def collect_once(task):
         parent = os.path.dirname(os.path.abspath(exe))
         if parent not in paths:
             paths.append(parent)
-    files = _file_snapshot(paths)
+    files, files_truncated = _file_snapshot(paths)
     old_files = checkpoint.get("files") or {}
     if "files" not in checkpoint:
         if files:
-            events_out.append(_event("file.baseline", "已建立文件基线: %d 个文件" % len(files),
-                                     {"file_count": len(files), "paths": paths}, "info",
+            note = "（已达扫描上限，基线不完整）" if files_truncated else ""
+            events_out.append(_event("file.baseline", "已建立文件基线: %d 个文件%s"
+                                     % (len(files), note),
+                                     {"file_count": len(files), "paths": paths,
+                                      "truncated": files_truncated}, "info",
                                      "directory_snapshot", "correlated"))
     else:
         for path, meta in files.items():
@@ -260,15 +293,28 @@ def collect_once(task):
                 events_out.append(_event("file.changed", "文件变化: %s" % path,
                                          {"path": path, "size": meta[1]}, "medium",
                                          "directory_snapshot", "correlated"))
-        for path in old_files:
-            if path not in files:
-                events_out.append(_event("file.removed", "文件消失: %s" % path,
-                                         {"path": path}, "medium", "directory_snapshot",
-                                         "correlated"))
+        if files_truncated:
+            # 截断快照不是完整视图：缺失键不代表文件消失（FreqErr §8 同坑）。
+            # 检修（2026-09-19）：修正实参错位——原把 "directory_snapshot"
+            # 传成 severity、"info" 传成 source，入库脏值令严重度/来源过滤全失灵。
+            events_out.append(_event("collector.warning",
+                                     "文件快照达到扫描上限，本轮跳过\"消失\"判定（旧基线合并保留）",
+                                     {"file_count": len(files),
+                                      "warning": "目录文件数超过单轮快照预算"},
+                                     "info", "directory_snapshot", "correlated"))
+        else:
+            for path in old_files:
+                if path not in files:
+                    events_out.append(_event("file.removed", "文件消失: %s" % path,
+                                             {"path": path}, "medium", "directory_snapshot",
+                                             "correlated"))
 
     new_checkpoint = dict(checkpoint)
+    # 截断时把旧基线合并写回（缺失键保留），杜绝假"消失/新增"振荡。
+    checkpoint_files = dict(old_files) if files_truncated else {}
+    checkpoint_files.update(files)
     new_checkpoint.update({"pids": pids, "connections": conn_keys,
-                           "exe_sha256": exe_hash, "files": files,
+                           "exe_sha256": exe_hash, "files": checkpoint_files,
                            "collected_at": _now()})
     new_checkpoint.update(activity_checkpoint)
     return events_out, new_checkpoint
@@ -334,8 +380,15 @@ class Supervisor:
         external = bool(lease and lease.get("owner") != self.owner and
                         time.time() - float(lease.get("heartbeat") or 0) < 15)
         return {"running": local or external, "local": local, "external": external,
-                "started_at": self.started_at, "active_tasks": sorted(self.active),
+                "started_at": self.started_at,
+                "active_tasks": self._active_snapshot(),
                 "enabled_tasks": sum(1 for t in db.list_tracking_tasks() if t["enabled"])}
+
+    def _active_snapshot(self):
+        """status() 可能来自 HTTP 线程：迭代共享集合必须持锁，否则与 worker
+        的 discard 并发会抛 RuntimeError("Set changed size during iteration")。"""
+        with self.lock:
+            return sorted(self.active)
 
     def _loop(self):
         while not self.stop_event.is_set():
@@ -400,18 +453,32 @@ _supervisor = Supervisor()
 
 
 def _validate_target(exe_path="", process_name="", pid=None):
+    # 引号剥离：表单/配置常带 "C:\...\x.exe" 形态，os.path.isfile 对引号恒 False。
+    exe_path = str(exe_path or "").strip().strip('"')
     exe_path = os.path.abspath(os.path.expandvars(exe_path)) if exe_path else ""
     if exe_path and not os.path.isfile(exe_path):
         raise ValueError("exe 路径不存在: %s" % exe_path)
     if pid is not None:
-        pid = int(pid)
-        if pid == 0:
-            pid = None  # 显式清除 PID（如进程已退出）
-        elif pid < 0:
-            raise ValueError("PID 必须为正整数")
+        pid_text = str(pid).strip()
+        if not pid_text:
+            pid = None  # 空串按未指定处理（避免 int("") 的晦涩报错）
+        else:
+            try:
+                pid = int(pid_text)
+            except ValueError:
+                raise ValueError("PID 必须为正整数，收到: %r" % (pid,))
+            if pid == 0:
+                pid = None  # 显式清除 PID（如进程已退出）
+            elif pid < 0:
+                raise ValueError("PID 必须为正整数")
+    process_name = str(process_name or "").strip()
+    if process_name and "." not in os.path.basename(process_name):
+        # tasklist 镜像名恒带 .exe；裸名（"notepad"）不补全会导致永不匹配、
+        # 任务静默"目标进程未运行"。
+        process_name += ".exe"
     if not exe_path and not process_name and not pid:
         raise ValueError("必须指定 exe 路径、进程名或 PID")
-    return exe_path, str(process_name or "").strip(), pid
+    return exe_path, process_name, pid
 
 
 def create_task(name, exe_path="", process_name="", pid=None, watch_paths=None,

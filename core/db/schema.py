@@ -99,4 +99,53 @@ CREATE TABLE IF NOT EXISTS daemon_leases (
   owner TEXT NOT NULL,
   heartbeat REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS investigation_cases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  software_name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  conclusion TEXT DEFAULT '',
+  evidence_count INTEGER DEFAULT 0,
+  action_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS investigation_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  type TEXT DEFAULT 'file',
+  path TEXT DEFAULT '',
+  name TEXT DEFAULT '',
+  value_preview TEXT DEFAULT '',
+  source TEXT DEFAULT '',
+  semantic_type TEXT DEFAULT '',
+  impact_score REAL DEFAULT 0.5,
+  status TEXT DEFAULT 'pending',
+  notes TEXT DEFAULT '',
+  discovered_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS investigation_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  evidence_id INTEGER,
+  action_type TEXT DEFAULT '',
+  action_detail TEXT DEFAULT '',
+  result TEXT DEFAULT '',
+  effect TEXT DEFAULT '',
+  snapshot_path TEXT DEFAULT '',
+  executed_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS investigation_progress (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  step_name TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  result_summary TEXT DEFAULT '',
+  started_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_case ON investigation_evidence(case_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_actions_case ON investigation_actions(case_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_progress_case ON investigation_progress(case_id);
 """

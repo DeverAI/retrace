@@ -7,8 +7,6 @@
 
 类似于法医的"案件档案"——每个案件都有完整的证据链和处理记录。
 """
-import json
-import os
 import time
 from core import db
 
@@ -256,72 +254,13 @@ def generate_report(case_id):
         "actions": actions,
     }
     return report
-
-
-# ========== 数据库表初始化 ==========
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS investigation_cases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    software_name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    status TEXT DEFAULT 'active',
-    conclusion TEXT DEFAULT '',
-    evidence_count INTEGER DEFAULT 0,
-    action_count INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now','localtime')),
-    updated_at TEXT DEFAULT (datetime('now','localtime'))
-);
-
-CREATE TABLE IF NOT EXISTS investigation_evidence (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    case_id INTEGER NOT NULL,
-    type TEXT DEFAULT 'file',
-    path TEXT DEFAULT '',
-    name TEXT DEFAULT '',
-    value_preview TEXT DEFAULT '',
-    source TEXT DEFAULT '',
-    semantic_type TEXT DEFAULT '',
-    impact_score REAL DEFAULT 0.5,
-    status TEXT DEFAULT 'pending',
-    notes TEXT DEFAULT '',
-    discovered_at TEXT DEFAULT (datetime('now','localtime')),
-    updated_at TEXT DEFAULT (datetime('now','localtime'))
-);
-
-CREATE TABLE IF NOT EXISTS investigation_actions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    case_id INTEGER NOT NULL,
-    evidence_id INTEGER,
-    action_type TEXT DEFAULT '',
-    action_detail TEXT DEFAULT '',
-    result TEXT DEFAULT '',
-    effect TEXT DEFAULT '',
-    snapshot_path TEXT DEFAULT '',
-    executed_at TEXT DEFAULT (datetime('now','localtime'))
-);
-
-CREATE TABLE IF NOT EXISTS investigation_progress (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    case_id INTEGER NOT NULL,
-    step_name TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',
-    result_summary TEXT DEFAULT '',
-    started_at TEXT DEFAULT (datetime('now','localtime')),
-    updated_at TEXT DEFAULT (datetime('now','localtime'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_evidence_case ON investigation_evidence(case_id, id DESC);
-CREATE INDEX IF NOT EXISTS idx_actions_case ON investigation_actions(case_id, id DESC);
-CREATE INDEX IF NOT EXISTS idx_progress_case ON investigation_progress(case_id);
-"""
+# ========== 数据库表初始化（已集中到 core/db/schema.py，2026-08-27 检修） ==========
 
 
 def init_db():
-    """初始化调查案例数据库表"""
-    with db.transaction() as c:
-        for stmt in SCHEMA.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                c.execute(stmt)
+    """兼容垫片：表结构已并入 core.db.schema.SCHEMA，由 db.init() 统一建表。
+
+    保留本函数避免既有调用点破坏；重复调用零副作用（IF NOT EXISTS）。
+    """
+    db.init()
     return {"ok": True}

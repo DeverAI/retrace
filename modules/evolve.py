@@ -14,7 +14,7 @@ import time
 from collections import Counter
 
 from core import config, db, events, logger
-from core.coerce import strict_bool as _strict_bool
+from core.coerce import as_bool, strict_bool as _strict_bool
 
 RISK_MAP = {"高": 1.0, "中": 0.6, "低": 0.3, "无": 0.0, "HIGH": 1.0,
             "MED": 0.6, "LOW": 0.3, "NONE": 0.0}
@@ -60,7 +60,9 @@ def _evidence_text(obs):
 def mine_rules(min_obs=3, top_tokens=6, auto_apply=None):
     sec = config.section("evolve")
     if auto_apply is None:
-        auto_apply = bool(sec.get("auto_apply", False))
+        # 检修（2026-09-14）：bool("false")==True 蠕虫的 config 路径残留——
+        # 统一走 coerce.as_bool，防配置写字符串 "false" 绕过人工确认红线。
+        auto_apply = as_bool(sec.get("auto_apply"), False)
     else:
         auto_apply = _strict_bool(auto_apply)
     if min_obs is None:
@@ -128,7 +130,7 @@ def adjust_weights(auto_apply=None):
     """
     sec = config.section("evolve")
     if auto_apply is None:
-        auto_apply = bool(sec.get("auto_apply", False))
+        auto_apply = as_bool(sec.get("auto_apply"), False)
     else:
         auto_apply = _strict_bool(auto_apply)
     stats = {"high": 0, "med": 0, "low": 0, "none": 0, "total": 0}

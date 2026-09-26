@@ -143,10 +143,13 @@ def _drift_report_locked(keyword, commit):
     current = build_snapshot(paths)
     baseline, history = load_state()
     first_run = baseline is None
-    if first_run and keyword and commit:
+    # 检修（2026-09-14）：首次运行 + keyword 一律拒绝——旧守卫要求 commit，
+    # 但 `if commit or first_run:` 使不 commit 的首跑同样把过滤子集写穿全局
+    # 基线（"过滤视图塌缩基线"旧坑的新位置，FreqErr §28 同坑）。
+    if first_run and keyword:
         return {"ok": False,
                 "error": "首次基线必须全量建立：带关键词的过滤视图不可作为全局基线"
-                         "（请去掉关键词重试，或先无过滤 commit 一次）"}
+                         "（请去掉关键词重试，或先无过滤运行一次）"}
     if first_run:
         rows = [{"path": p, "status": "new", "baseline_sha": "",
                  "current_sha": s["sha16"]}

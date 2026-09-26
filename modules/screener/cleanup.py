@@ -126,13 +126,29 @@ def _delete_reg_key_recursive(root_name, subkey):
     if not subkey:
         return False  # 拒绝删根键
     try:
-        with winreg.OpenKey(_winroot(root_name), subkey, 0, winreg.KEY_ALL_ACCESS) as key:
+        # 检修（2026-09-14）：先枚举全部子键名再逐个删除并校验。旧实现
+        # `while True: EnumKey(key, 0)` + 无视递归删除返回值——首个"删不掉"的
+        # 子键（ACL 拒绝 DELETE 最典型）会让本函数无限重试同一键，占死
+        # _cleanup_lock，清理/恢复入口整体挂死直至进程重启。
+        with winreg.OpenKey(_winroot(root_name), subkey, 0,
+                            winreg.KEY_ALL_ACCESS) as key:
+            subnames = []
+            i = 0
             while True:
                 try:
-                    sname = winreg.EnumKey(key, 0)
-                except OSError:
-                    break
-                _delete_reg_key_recursive(root_name, subkey + "\\" + sname)
+                    subnames.append(winreg.EnumKey(key, i))
+                    i += 1
+                except OSError as e:
+                    # 检修（2026-09-19）：只有 ERROR_NO_MORE_ITEMS(259) 才是
+                    # 枚举正常结束；其它错误（ACL 拒读等）意味着子键清单
+                    # 不完整——继续删会留下孤儿键，必须放弃删除。
+                    if e.winerror == 259:
+                        break
+                    logger.record_err("screen.cleanup.enumkey", e)
+                    return False
+        for sname in subnames:
+            if not _delete_reg_key_recursive(root_name, subkey + "\\" + sname):
+                return False  # 子键删除失败：立即中止，绝不无限重试
         winreg.DeleteKey(_winroot(root_name), subkey)
         return True
     except FileNotFoundError:

@@ -11,6 +11,7 @@
   search(query, top_k) 检索最相似条目
   save_index()/load_index()  索引持久化
 """
+import http.client
 import json
 import math
 import os
@@ -118,8 +119,12 @@ class BaseIndex:
             if not isinstance(meta, dict):
                 meta = {}
             vec = embed_fn(text)
-            if vec is not None:
-                self.docs.append({"text": text, "vec": vec, "meta": meta})
+            if vec is None:
+                # 检修（2026-09-14）：openai provider 加载失败（网络/key/接口错）
+                # 时回退本地向量——旧行为把失败条目整条丢弃，内存索引静默清空，
+                # 随后 save_index 会用空库覆盖磁盘索引 = 经验库永久丢失。
+                vec = _local_vec(text, self.dim)
+            self.docs.append({"text": text, "vec": vec, "meta": meta})
 
 
 class LocalIndex(BaseIndex):
@@ -148,7 +153,10 @@ class OpenAIEmbed(BaseIndex):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, OSError, ValueError) as e:
+        except (urllib.error.URLError, OSError, ValueError,
+                http.client.HTTPException) as e:
+            # HTTPException：resp.read() 的 IncompleteRead 不是 OSError 子类，
+            # 缺它会穿透"回退本地"契约（检修 2026-09-19）
             logger.warn("embedding API 调用失败，回退本地: %s" % e)
             return None
         items = data.get("data", [])
@@ -227,6 +235,12 @@ def save_index():
     with _index_lock:
         if _index is None:
             return False
+        # 检修（2026-09-14）：载入过非空索引但当前 docs 为空 = 上游发生过
+        # 静默清空类事故——拒绝覆盖磁盘，保住经验库（宁可少存不可清空）。
+        if getattr(_index, "_loaded_nonempty", False) and not _index.docs:
+            logger.warn("embedding.save_index：内存索引为空但磁盘索引非空，"
+                        "拒绝覆盖（疑似加载失败），如确需清空请手工删除索引文件")
+            return False
         try:
             with open(INDEX_FILE, "w", encoding="utf-8") as f:
                 json.dump(_index.dump(), f, ensure_ascii=False)
@@ -249,6 +263,8 @@ def _load():
                 logger.warn("embedding 索引文件格式非法（非对象），已忽略")
                 return False
             _index.load(data)
+            # 记录"磁盘上曾有非空索引"——save_index 据此拒绝空库覆盖（防丢库）
+            _index._loaded_nonempty = bool(_index.docs)
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
             logger.record_err("embedding.load", e)
             return False

@@ -9,6 +9,10 @@ def call(name, args, context=None):
     t = tools.TOOLS.get(name)
     if t is None:
         return {"ok": False, "error": "未知工具: %s" % name}
+    # 工具组门禁（2026-08-27 检修）：未启用组的工具 fail-closed，
+    # 与系统提示词的清单过滤共用同一 enabled_tool_groups 来源
+    if not tools.tool_enabled(name):
+        return {"ok": False, "error": "工具 %s 所在组未在 config.agent.tool_groups 启用" % name}
     if not isinstance(args, dict):
         return {"ok": False, "error": "参数必须为对象"}
     # 只透传声明过的参数，丢弃多余键（防注入额外参数）
@@ -22,22 +26,6 @@ def call(name, args, context=None):
         t0 = time.time()
         data = t["run"](**kwargs)
         dur = round(time.time() - t0, 2)
-        from core import audit
-        from core.redact import redact_secrets
-        outcome = "error" if isinstance(data, dict) and data.get("error") else "success"
-        # 审计载荷脱敏（2026-08-27）：参数中的密钥形状值只存哈希指纹占位
-        audit.record("agent.tool", {"tool": name, "duration": dur,
-                                    "args": redact_secrets(kwargs),
-                                    "context": context or {},
-                                    "result_type": type(data).__name__,
-                                    "result_error": redact_secrets(
-                                        str(data.get("error") or ""))[:200]
-                                    if isinstance(data, dict) and outcome == "error" else ""},
-                     actor="agent",
-                     resource="task:%s" % context["task_id"] if context and context.get("task_id") else "agent",
-                     outcome=outcome, risk=t["risk"])
-        return {"ok": outcome == "success", "tool": name, "data": data,
-                "error": data.get("error") if outcome == "error" else None, "dur": dur}
     except Exception as e:
         logger.record_err("agent.tool.%s" % name, e)
         try:
@@ -52,3 +40,24 @@ def call(name, args, context=None):
         except Exception:
             pass
         return {"ok": False, "tool": name, "error": str(e)}
+    # 检修（2026-09-14）：审计段独立 try——审计若抛异常不得把"已实际执行"的
+    # 工具误报为失败，否则模型会重试已生效的读写操作。
+    outcome = "error" if isinstance(data, dict) and data.get("error") else "success"
+    try:
+        from core import audit
+        from core.redact import redact_secrets
+        # 审计载荷脱敏（2026-08-27）：参数中的密钥形状值只存哈希指纹占位
+        audit.record("agent.tool", {"tool": name, "duration": dur,
+                                    "args": redact_secrets(kwargs),
+                                    "context": context or {},
+                                    "result_type": type(data).__name__,
+                                    "result_error": redact_secrets(
+                                        str(data.get("error") or ""))[:200]
+                                    if isinstance(data, dict) and outcome == "error" else ""},
+                     actor="agent",
+                     resource="task:%s" % context["task_id"] if context and context.get("task_id") else "agent",
+                     outcome=outcome, risk=t["risk"])
+    except Exception as audit_exc:
+        logger.record_err("agent.tool.audit.%s" % name, audit_exc)
+    return {"ok": outcome == "success", "tool": name, "data": data,
+            "error": data.get("error") if outcome == "error" else None, "dur": dur}

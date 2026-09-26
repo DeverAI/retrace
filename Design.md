@@ -428,3 +428,105 @@ tests/test_maint_round.py（全套 138 绿）。结构性变化：
 
 详细缺陷-修复对照见 FreqErr §28。残余已接受项：extension 握手协议维持
 查询串方式（环回+常量时间比较边界成立），popup 已掩码化。
+
+
+## 21. Agent 读取&控制能力增强（2026-09-14）
+
+M10 工具面从「能搜不能读、能审不能控」补齐为完整闭环（用户确认范围：
+读取全包 + 控制全包 + 进程启停）。
+
+### 新增只读工具（core 组，7 个）
+- `read_file`：文本读取（UTF-8 容错），offset/max_chars 分页（钳制 200~8000）；
+  出参统一过 core.redact 双模式脱敏（branded secret + 40+ 高熵长串）；
+  二进制（前 8KB 含 NUL）拒绝并引导 fingerprint/decompile；
+  config.json / retrace.db / *.pem / *.key / *.pfx / *.p12 / *.kdbx 硬拒绝。
+- `list_dir`：目录列举（目录在前；pattern 仅过滤文件、目录保留便于下钻；上限 200）。
+- `read_registry_value`：精确单值读取（复用 regscan.read_value；注册表仍只读不写）。
+- `query_observations` / `tracking_status` / `watcher_status` / `browser_status`：
+  观察库查询、追踪任务列表与详情（含事件/运行样本）、观察器时间线、浏览器中枢状态。
+
+### 新增控制工具（新 control 组，4 个，全部 RISK_CMD）
+- `capture_control`（start/stop/stop_all）、`tracking_control`
+  （create/start/pause/update/delete；update 字段白名单 7 键；create 不自动启动）、
+  `watcher_control`（add_target/remove_target/start/stop）、
+  `process_control`（launch/kill —— 指纹实验「重启目标软件」闭环由此打通）。
+- 与 run_command 同级安全链：reviewer 模型审核 + 用户逐次确认 + ≥12 字 reason；
+  无人工通道自动拒绝。`agent.tool_groups` 留空=全启用（向后兼容），可显式剔除 control。
+- process_control 确定性防线：kill 拒 PID≤4 / ReTrace 自身 / 系统关键进程
+  （smss/csrss/wininit/winlogon/services/lsass/system/registry/memory compression，
+  以 tasklist 数据行判定，INFO 提示行不误判）；launch 拒 cmd/powershell/pwsh/
+  wscript/cscript/mshta/rundll32/reg/regsvr32/regedit；Popen 句柄保活 + poll 回收。
+
+### reviewer / 系统提示词
+- REVIEW_PROMPT 增控制类判定准则：目的明确、参数最小化 → allow；
+  系统关键进程或范围不明的批量操作 → deny。
+- _system_prompt 权限二分类更新：只读含状态查询；读写含抓包/追踪/观察器控制与进程启停。
+
+### 测试
+tests/test_agent_read_control.py 23 例：read_file 分页/钳制/脱敏/二进制与敏感拒绝、
+list_dir 排序与过滤、read_registry_value 真实只读读值与错误形状、
+query_observations 与 tracking_control 闭环（临时 DB 隔离）、控制 action 校验与
+必填参数、launch/kill 全链路（自造 python 子进程 + tasklist 映像断言 + tearDown 兜底）、
+control 组门禁与 opt-out。全套 195 绿；test_agent_guard 同款 config 金丝雀随模块生效。
+
+## 22. 十三路并行深度检修（2026-09-14/15）
+
+方法与教训全文见 FreqErr.md §30；待办与取舍见 Future.md 2026-09-14 节；环境/约束
+事实首次建档于 Fact.md。要点：
+
+- **验证基建**：`_verify_api_contract.py` 重建（白名单 117 项 + GUI _mod 调用点 102 处
+  机械核对，含 agent 包特例）；`_gui_smoke.py` 退出前等待在飞线程（消除 QThread 假警报）。
+- **修复面**（全套 218 测试绿，新增 tests/test_activity_tracking_fixes.py 23 例）：
+  - tracking/activity：文件快照截断防护（对齐注册表侧）、exe 任务下无映像事件的
+    PID 归因 + correlated 降级 + 设备路径盘符换算、dns_snapshot 失败区分、
+    pids 排序去重、status() 加锁、_validate_target 输入整备、tasklist/netstat
+    按 locale 代码页解码。
+  - agent：monitor_identity_access/hunt 升 RISK_CMD + duration 钳 300s、launch
+    永拒补解释器/持久化载体 + 参数级 deny + 字符串 args 显式报错、watcher_control
+    失败如实上报、json_edit_field 扁平优先/嵌套回退 + 标量父级守卫、read_file
+    敏感名单扩容（WAL/备份/SSH/.env）、read_registry_value 出参脱敏、run_full_
+    investigation 注册表证据脱敏、executor 审计段独立 try、ipconfig dash 归一。
+  - screener：cleanup 递归删键死循环消除、drift 首跑过滤基线塌缩守卫、
+    identity_hunt monitor 进程名 .exe 双尝试 + duration 钳制。
+  - M8/M5/M9/M3/M6：java 常量池幻影槽（while 手动推进）、embedding 加载失败
+    回退本地向量 + 空库拒绝覆盖磁盘、evolve config 路径 as_bool、ai.chat 补
+    HTTPException、hunt 假阴性证据（info.error）与观察结束即停采集。
+  - Web/GUI：状态条短 id + 特例别名（14 视图反馈复活）、总览 statCard 实参对调、
+    AI 助手重入守卫、watcher 五处 locale 解码。
+- **文档同步**：README（Python 3.14/路径/Wireshark 降级/218 例/15 页）、FreqErr §30、
+  Fact.md 重建、Future.md 登记 12 条待办。
+- **备份**：backups/code_snapshots/pre_maint_20260914/（改动文件全量或区域级原样备份）。
+
+## 23. 深度检修第二轮：修复自身审查 + 同类出口全扫（2026-09-19）
+
+方法与教训全文见 FreqErr.md §31；残差登记见 Future.md 2026-09-19 节。本轮定位：对
+§22 那一大批未提交改动做"修复的修复"——不只找新代码 bug，更验证每处修复是否真正生效、
+有没有改一半留一半。要点：
+
+- **基线**：218 测试 / 契约脚本 / GUI 冒烟 15 页 / node --check 全绿；Err.log 空。
+- **两路审查**：三路子agent 首查（约 40 线索、核实真缺陷约 25）→ 修复 → 全局完整性
+  复检子agent（专查调用方兼容 + 同类出口，9 线索、核实真缺陷 8）。
+- **核心修复面**：
+  - json_edit_field nested 助手定义顺序（上轮"嵌套回退"实为死代码）。
+  - redact：GUID/UUID/32-hex 形状规则补齐（§30 对 GUID 的脱敏声明本轮才真正生效），
+    指纹大小写/花括号归一保跨来源关联；四注册表/身份工具出口 + watcher_status /
+    monitor_identity_access 时间线出口统一包 redact_secrets。
+  - 同类出口全扫：search_files 补 ReDoS 守卫（list_dir 同料）；read_file 敏感路径
+    短名/realpath 归一（堵 8.3 短名绕名单）；_run_cmd 默认 locale、tshark 显式 utf-8。
+  - 控制面：capture_control/watcher_control 幂等门 False 如实上报为"已在运行"而非
+    error；bpf 防选项注入；enabled_tool_groups fail-closed。
+  - identity_hunt：deep_registry_scan 节点预算整次共享 + 关键词守卫 + truncated 显式
+    标记；correlate 三形状闭合 + 标签去重 + masked 双键关联（修工具链 sanitize 打断）；
+    _reg_value_text 收 REG_EXPAND_SZ/MULTI_SZ；hunt_software_fingerprint 守卫与截断上报。
+  - hunt：finish_observation 用 basename(path) 作 remove_target 键（旧用显示名恒不
+    匹配→watcher 停不掉）；embedding.remember 包异常；embedding._call 补 HTTPException。
+  - cleanup：_delete_reg_key_recursive 枚举仅 winerror==259 视为结束，权限错误拒删。
+- **验证基建**：新增 tests/test_maint_20260919.py 34 例（含错误封套消费、脱敏形状、
+  幂等门语义、correlate 双键），全套 218→252 绿。
+- **备份**：backups/code_snapshots/pre_maint_20260919/（改前 25 文件）+
+  post_maint_20260919/（改后快照）。
+- **加强建议同日全部落地**（FreqErr §31 收尾节）：契约脚本新增 [A] 封套消费闭合 /
+  [B] 守卫覆盖锚点表 / [C] 同类位普查（ReDoS·幂等门·winreg 枚举，豁免清单挂账
+  Future），两条新检查配负探针回归证明有牙；`_review_agent_template.md` 固化
+  子agent 审查两问与负过滤纪律；`tests/winreg_contract.py` 建档 winreg 真机异常
+  契约（枚举结束 winerror=259/errno=22）+ 只读真机探测回归。全套 252→257 绿。

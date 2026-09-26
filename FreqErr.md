@@ -503,3 +503,191 @@
   留空=保留语义（对齐 Web 控制台），查询串握手维持现状——环回绑定+常量时间
   比较+manifest 无 externally_connectable 的既有边界成立，作为已知取舍记录。
 
+
+## 29. Agent 深度检修轮：逐行读码确认缺陷与能力集中化（2026-08-27）
+
+方法：不跑冒烟、逐行读 modules/agent/* 与 identity_hunt/investigation_case，
+每条发现先到源码验证再修，34 条新回归（tests/test_agent_deep_round），
+全套 172 绿。清单：
+
+- [recycle_file pFrom 单 \\0 终止] SHFileOperationW 契约是"双 \\0 结尾的路径
+  列表"，单 \\0 让 API 越界读堆上相邻内存——经典碰巧能跑。修：p+"\0\0"。
+  教训：Win32 结构体字段契约必须注释钉死，不靠 ctypes 碰运气。
+- [run_command 裸 split 拆碎引号参数] `"C:\Program Files\x.exe"` 被拆成两个
+  残缺 token，带空格路径命令必然失败。修：shlex(posix=False)+逐 token 剥引号
+  （_split_command），引号不闭合回退旧行为。
+- [modify_fingerprint 文本写二进制指纹库] 对 DIPS/SharedStorage（SQLite）
+  文本模式写盘=整库损毁。修：头 8KB 含 NUL 即拒绝 text；二进制改写必须
+  encoding='base64'，回读验证按形态分派。
+- [leftover_scan 带空格路径静默漏检] 旧正则 [^",\s]+ 不吃空格，
+  "C:\Program Files\..." 永远匹配不出 exe → 悬空项漏报。修：复用
+  screener.common._extract_exe 单一实现（集成点）并补 HKCU 侧扫描。
+- [confirm_cb 异常炸穿主循环] notify_cb 有 try/except 而审批回调没有——
+  GUI 对话框故障直接打死整次任务。修：异常按"拒绝"处理并 record_err（fail-closed）。
+- [52 工具全量清单每次注入系统提示词] 每次 ai.chat 多付 ~1500 token 且稀释
+  注意力。修（能力集中化）：TOOL_GROUPS 四组（core/fingerprint/identity/
+  investigation）+ config.agent.tool_groups 勾选启用面；manifest 按组过滤、
+  executor 对未启用组 fail-closed；AGENT_SYS 改 _system_prompt() 动态构建。
+- [_parse_call 的 tool+final 双键歧义] {"tool":"x","final":"..."} 曾被静默
+  当 final，工具调用无声丢失。修：tool 键优先，args 形状不合法报错重试。
+- [max_tokens=2000 硬编码] 长报告截断 → JSON 解析失败 → 重试烧步数。
+  修：config.agent.max_tokens（500~8000 夹紧）。
+- [deep_registry_scan 名不副实] 只枚举单层键名，"QoderWork CN" 命中后读不到
+  其下 InstallLocation。修：命中子键有界递归（进入后收全值，未命中不下钻，
+  节点预算 2000），成本与命中数成比例。
+- [跨来源关联形同虚设] 旧实现文件按 path 分组（每 path 唯一）、注册表按
+  data 分组——两组键永不相交，cross_references 恒空。修（T13 重做）：以值为键
+  （文件侧 findings.values[].raw ↔ 注册表 data/UUID 提取、去花括号归一），
+  raw 仅模块内使用，sanitize_findings 剥除后才出边界。真机验证：
+  DeveloperTools\deviceid ↔ storage.json telemetry.devDeviceId、
+  SQMClient\MachineId ↔ telemetry.sqmId 两条同值链现形——与手工排查结论一致。
+- [调查案例表不在全局 SCHEMA] investigation_* 四表只由本地 init_db 建——
+  全新安装/重建库后 Agent 调 create_investigation_case 必崩 no such table。
+  修：并入 core/db/schema.py，db.init() 统一建表；init_db 降级为兼容垫片。
+- [系统锚点未入关联输入] hunt/investigation 只喂 deep_registry_scan 的结果，
+  "主犯"锚点值和文件同值关系不现形。修：scan_system_anchors 并入 correlate
+  输入（顺带修 {path:dict} 与 {path:[hits]} 形状不一致导致的崩溃）。
+- [run_full_investigation 重复扫描] 内部先自跑 registry scan 又调 hunt
+  （再扫一遍）；file 证据 value_preview 取不存在字段恒空。修：拆出
+  file_identity_pipeline 单次扫描，证据带 masked 预览与评估后分数。
+- [锚点根名输出裸整数] REG_ROOTS 反查 dict 因 winreg 句柄常量符号性差异
+  miss → 显示 18446…969。修：winreg 常量直接比较。
+- [浮点 0.6+0.3 卡档位] 跨来源加成 0.8999…9 进不了 0.9 档。修：round(...,6)。
+- [静态检查环境漂移] 当前 PATH 的 Python（3.14/miniforge）无 pyflakes——
+  以 AST 未使用导入/重复定义最小检查器替代（本轮文件零问题）；
+  后续换机需先核对 pyflakes 可用性。
+
+
+## 30. 13 路并行深度检修轮（2026-09-14/15）
+
+方法：13 个只读审查代理按模块分组通读全部源码（约 500KB）出线索，逐条到源码核实后修复；
+另做机械化契约核对（ALLOWED 白名单 117 项、GUI _mod 调用点 102 处、db.* 调用、JS node --check、
+五处开关同步、git 敏感文件历史、GUI 离屏冒烟）。全套 218 测试绿（+23 新回归）。
+真 bug 比例约 60%（高于 §17 记录的 20-30%，因审查提示词带了既往坑清单做负过滤）。
+
+- [for-range 内 idx+=1 无效] java_parser 常量池 long/double 幻影槽从未真正跳过
+  （for 每轮重新绑定 idx），serialVersionUID=1L 即全池错位。正确做法：手动推进索引用
+  while，遇 wide tag 额外 +1；"循环变量自增"必须一眼确认是 while 还是 for-range。
+- [截断快照当完整基线（文件侧漏修）] tracking._file_snapshot 超 1200 文件提前 return
+  截断快照，collect_once 三向 diff + 写回基线 → 假"消失/新增"振荡刷屏。正确做法：
+  返回 (snap, truncated)，截断时跳过消失判定 + 旧基线合并写回（注册表侧 §8 同款）。
+- [能力探测与归因过滤脱节] capabilities 宣传 Security 4663/DNS 通道为"精确源"，
+  但 _matches_target 的 exe 分支 early-return 把无 Image 字段的事件（DNS-Client）
+  全部过滤、PID 兜底不可达——最规范的 exe_path 配置下精确源整体哑火。正确做法：
+  无映像事件按 PID 归因但强制降级 correlated；\Device\HarddiskVolumeN 用
+  QueryDosDevice 换算盘符后再比 exe。
+- [execution_pid 语义陷阱] 事件 System/Execution@ProcessID 是"写入事件的进程"
+  （EventLog 服务），不是目标进程——绝不能拿它做 PID 归因兜底。
+- [失败输出 ≠ 空缓存] dns_snapshot 只捕子进程异常不查 returncode；Dnscache 停止时
+  ipconfig 常 exit 0 只打错误文案（"could not display"/"无法显示"）→ 返回 [] 被当
+  真实空缓存清基线，恢复后一轮爆数百假 DNS 事件。正确做法：rc!=0 → None；
+  零记录 + 双语言失败文案 → None（方向安全：失败=保基线跳过本轮）。
+- [无锁迭代共享集合] Supervisor.status() 无锁 sorted(self.active) 与 worker discard
+  并发 → RuntimeError → /api/v1/daemon 500。正确做法：快照进锁内。
+- [进程枚举顺序不稳定] pids 列表顺序敏感比较 + 事件指纹含顺序 → DB 去重失效、
+  "正在运行"反复入库。正确做法：比较/入库/写 checkpoint 前 sorted。
+- [解释器等价于 shell] Agent launch 永拒名单漏 python/node/wsl/schtasks 等，
+  ["python.exe","-c",payload] 可等价交出代码执行；args 传 "-c" 类标志也要静态 deny；
+  字符串 args 被静默丢成 []——显式报错。测试同步改用 ping 长驻子进程验证 launch/kill。
+- [RISK_READ 伪装读写] monitor_identity_access/hunt(monitor_duration>0) 标 RISK_READ
+  却真实启动观察器 + time.sleep(duration) 无上限。正确做法：升级 RISK_CMD（params 补
+  reason，否则 executor 12 字校验直接拒）+ duration 钳制 0~300。
+- [注册表命中值明文出边界] deep_registry_scan/系统锚点把注册表值原文写进证据
+  value_preview 并进 LLM 会话——与"值脱敏才出边界"自家承诺矛盾（同坑新位置）。
+  正确做法：redact_secrets 包一层（tools 层 read_registry_value 同修）。
+- [set 分支未接嵌套回退] json_edit_field 的 set_nested 是零调用死代码，mode=set 对
+  "a.b.c" 写字面量扁平键、嵌套值原封不动（delete 分支反而正确）。注意既有测试锁定
+  "扁平点号键优先"语义（VSCode 族 storage.json），正确做法：扁平优先、嵌套回退对称。
+- [嵌套 set 无标量父级守卫] set_nested 对标量父级调 .get 会 AttributeError——
+  回退实现必须逐层 isinstance 检查。
+- [provider 失败 → 经验库永久丢失] embedding openai 加载失败时 _load_docs 静默丢条目
+  （内存清空），退出时 save_index 用空库覆盖磁盘。正确做法：失败条目回退本地向量 +
+  save_index 拒绝"磁盘非空但内存空"的覆盖。
+- [伪装"内容编码"实为"控制台代码页"] watcher/tracking 对 tasklist/netstat/ipconfig
+  强制 encoding="utf-8"，中文 Windows 控制台输出 GBK → 中文表头/进程名变 U+FFFD，
+  DNS 维度静默归零。正确做法：locale.getpreferredencoding(False)，tshark 才是 utf-8。
+- [hunt 采集只开不收] start_hunt 启动 "hunt" 抓包 + watcher 轮询，finish_observation
+  无停止路径——tshark 与 2s 轮询一直跑到应用退出（子进程滞留 + 隐私面扩大）。
+  正确做法：观察结束即 stop_capture("hunt") + remove_target + 最后目标移除后 stop。
+- [info["error"] ≠ 顶层 error] decompile 解析失败信息在 info 里，hunt 旧判断查顶层 →
+  坏文件记成"评分 0/0/0"假阴性。与 §12"逐层检查解析警告"同坑。
+- [bool("false") 蠕虫的 config 路径残留] evolve 两处 bool(sec.get("auto_apply"))——
+  显式入参已 strict、config 路径漏改，配置写 "false" 即绕过人工确认红线。
+- [状态条 id 失配（前端系统性）] viewTemplate 用全 id 建状态条（st-v_pcap），run()
+  用短 id 找（st-pcap）→ 14/15 视图反馈整体失灵且无报错。特例视图（cfg_ai/db/
+  hunt_refill）需补别名条。
+- [statCard 实参倒置] 总览 6+6 处 statCard(label,value) 全部传反——加载态与完成态
+  自相矛盾。机械性错误靠"加载占位与真实调用对拍"即可发现。
+- [GUI 重入只做一半] _running 只写不读，回车键绕过禁用按钮并发第二个 run_task。
+- [windsurf 式死配置] pcap.tshark_path 配置项被 find_tshark 的 TTL 重扫覆写（登记
+  到 _tshark_checked 才能存活）——"配置项是否真的被读"要作为检修固定项。
+- [cleanup 递归删键可死循环] while True: EnumKey(key,0) + 无视递归返回值，ACL 拒删
+  子键时无限重试同一键并占死 _cleanup_lock。正确做法：先枚举全部子键名，逐个删并
+  校验，失败立即 return False。
+- [首次过滤基线塌缩（drift 新位）] 首跑+keyword 不 commit 也把子集写穿全局基线
+  （守卫只挡 commit）。正确做法：first_run+keyword 一律拒绝。
+- [审查代理提示词要带负过滤清单] 把 FreqErr 已知坑列进子代理提示词后，误报率显著
+  下降（60% 真 bug）；但仍有"tests 锁定语义被当 bug 报"（json_edit_field 扁平键）
+  ——改共享语义前先查测试锚点。
+
+## 31. 深度检修第二轮：修复自身的新坑与同类出口扫描（2026-09-19）
+
+方法：基线机械验证（218 测试/契约脚本/GUI 冒烟全绿）→ 三路子agent审查约 40 条线索 →
+逐条源码核实（真缺陷约 25 条）修复 → 新增 25 例回归 → 全局完整性复检子agent 再出 9 条
+（核实 8 真、1 属已接受设计代价）→ 修复后 252 测试全绿。本轮最重要教训：**修复本身
+也会引入新缺陷，复检子agent 必须看"调用方兼容 + 改一半留一半"，不能只看改动点**。
+
+- [nested 助手定义在用之后] json_edit_field 三个 def 写在 existed_before 探测之后，
+  非顶层键调 get_nested 抛 UnboundLocalError——上轮引以为傲的"嵌套回退"从未生效且
+  delete 分支一并被打死。正确做法：函数定义先于一切使用；"回退分支"必须有触达该
+  分支的测试，只测主路径等于没测。
+- [修复声明 ≠ 修复生效] §30 声称"redact 包出口修复注册表明文"，实际 GUID 仅 36 字符
+  不触发 ≥40 兜底，四舍五入等于没修。正确做法：修"某形状秘密被脱敏"必须拿该形状的
+  真实样本断言 notIn，而不是只包一层 redact_secrets 就宣布完成。
+- [脱敏指纹归一不对称] redact 占位符指纹按原串哈希，GUID 注册表存大写/文件存小写
+  → 同值不同占位符，跨来源关联断裂；32 位无横杠 hex（md5 形态锚点）仍是漏网形状。
+  正确做法：形状类规则的指纹按大小写/花括号归一后计算；新增形状规则与 identity_hunt
+  锚点认定（UUID_RE/HEX32_RE）对齐。
+- [幂等门 False 被包成失败] 同轮修了 watcher_control start（False=已在运行），
+  capture_control start 却把 pcap.Capture.start() 幂等门的 False 报成"tshark 不可用"
+  error 封套——审计 outcome 失真、模型误判环境坏了。正确做法：布尔返回值的
+  start/register 类 API 一律先问"False 是失败还是已存在"，封套按语义分流。
+- [工具出口 sanitize 打断工具链] extract_identity_semantics 出口剥 raw 只留 masked，
+  而下游 correlate_identity_sources 工具声明"输入是 extract 的输出"却只认 raw——
+  cross_references 恒空，整条关联链报废。正确做法：收紧任何出口边界时，grep 工具
+  manifest 里**声明消费该输出**的全部下游；correlate 双键（raw 或 masked）兼容两态。
+- [同类出口必须全扫] 四个注册表工具出口包 redact 后，watcher_status/monitor_identity_access
+  的时间线仍带"注册表变化 old->new"明文；list_dir 接了 ReDoS 守卫，同类的 search_files
+  仍裸 re.compile。正确做法：每立一条新守卫，立即 grep 全库同类出口/同类入参逐一套用，
+  修一个=修一批。
+- [错误封套的消费者要逐个闭合] deep_registry_scan 新增 {"error":...} 返回后，
+  run_full_investigation 直接 .items() 迭代错误字符串崩在半路，且案件已建 → 库里遗留
+  running 孤儿。正确做法：改返回形状前先 grep 调用方；守卫放**副作用（建案/落盘）之前**。
+- [守卫自身类型漏洞] keyword 守卫写 (keyword or "").lower()，LLM 传 int 直接
+  AttributeError。正确做法：入参归一 str() 先行再判长度。
+- [不完整枚举当正常结束] EnumValue/EnumKey 裸 except OSError: break，权限抖动与
+  真结束无法区分 → 部分结果冒充全量（§8"截断当基线"在读侧的残留）。正确做法：
+  仅 winerror==259 视为结束，其余置 truncated 标记并显式上报；删除侧同料（cleanup
+  已修），扫描侧本轮补齐。
+- [测试 fake 偏离真机契约] fake 用 OSError(259,...) 表示 no-more-items——真实 winreg
+  抛的实例带 .winerror=259（两参 OSError 只填 errno）。真契约收紧后 fake 立即误判。
+  正确做法：mock OS API 时先抓一次真机异常对象核对属性，fake 复刻属性而非"看起来对"。
+- [while-else 表达"条件耗尽退出"] `while budget>0: ...break` + else 分支恰好区分
+  "自然耗尽"与"枚举结束"，比事后猜标志可靠；但注释必须写明 else 语义，否则后人不敢用。
+
+### 本轮量化
+新增回归 34 例（tests/test_maint_20260919.py，两批），全套 218→252 绿；契约脚本、
+GUI 冒烟、Err.log 空。备份：pre_maint_20260919（改前）+ post_maint_20260919（改后）。
+
+### 收尾：本轮"加强建议"全部落地（同日）
+1. `_verify_api_contract.py` 新增 [A] 封套消费闭合检查（返回错误封套的生产者
+   清单化，"调用+迭代同函数"必须 error/isinstance 闭合）。
+2. 同脚本 [B] 守卫覆盖锚点表 + [C] 同类位普查（用户正则入口、幂等门调用点、
+   winreg 枚举甄别位；豁免清单绑定 Future 待修项，修好即从豁免里删）。
+   两条新检查各配负探针回归（ContractTeethTest）——**新判据必须记下红在哪一行**。
+3. `_review_agent_template.md`：子agent 审查提示词模板（四块上下文 +
+   "调用方兼容/改一半留一半"两问 + 负过滤纪律）。
+4. `tests/winreg_contract.py` + `tests/test_winreg_contract.py`：真机抓取的
+   winreg 异常契约（枚举结束 winerror=259/errno=22）建档，fake 统一起源，
+   Windows 上带只读真机探测钉死。全套 252→257 绿。
+

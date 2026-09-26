@@ -20,7 +20,7 @@ ReTrace 是一个以 Windows 为目标的软件漏洞查找分析反向工具，
 | M7 | watcher | 选定 APP 集中观察（进程树/网络/DNS/文件/注册表时间线） |
 | M8 | ai | OpenAI 兼容 API 客户端（只读顾问，不越界） |
 | M9 | hunt | 观察-标记-沉淀闭环 + 数据库经验库 |
-| M10 | agent | 任务式 LLM Agent（规划-审核-执行，独立审核模型） |
+| M10 | agent | 任务式 LLM Agent（规划-审核-执行，独立审核模型；读取面：文件/目录/注册表值/观察库/各模块状态只读，控制面：抓包/追踪/观察器/进程启停） |
 | M11 | screener | 筛查工作台（主入口：可筛查/可追踪/可标记，人机协作） |
 
 另有：**任务式内容追踪（tracking）** 与 **隐私保护与系统操作门禁（privacy_guard）**。
@@ -30,8 +30,9 @@ ReTrace 是一个以 Windows 为目标的软件漏洞查找分析反向工具，
 ## 2. 运行环境
 
 - 操作系统：Windows（本机 win32）
-- Python：3.12 / 3.13 均实测通过（3.12.10、3.13.13）
-- Wireshark：已安装（M1 抓包依赖 `tshark.exe` / `dumpcap.exe`）
+- Python：3.12 / 3.13 / 3.14 均实测通过（3.12.10、3.13.13、3.14.7）
+- Wireshark：M1 抓包依赖 `tshark.exe` / `dumpcap.exe`（未安装时自动降级为
+  仅离线解析并告警，不影响其余模块）
 - 数据库：SQLite（标准库 `sqlite3`，单文件 `retrace.db`）
 - 桌面 GUI：PyQt6（唯一第三方大依赖，满足托盘/开机自启/打包）
 
@@ -40,8 +41,8 @@ ReTrace 是一个以 Windows 为目标的软件漏洞查找分析反向工具，
 ## 3. 安装与依赖
 
 ```powershell
-# 进入项目根目录
-cd "C:\Users\Amily\Desktop\最近科创\监控"
+# 进入项目根目录（按本机实际路径调整）
+cd "C:\Users\david\Documents\all_projects\监控"
 
 # 安装唯一第三方依赖
 pip install PyQt6
@@ -66,6 +67,8 @@ pip install PyQt6
   `RETRACE_API_KEY`。设置页（GUI/Web）读取时只显示掩码预览；保存留空=保留
   已存密钥、输入 `(clear)`=显式清除。
 - **Agent 审核模型 `agent.reviewer_model`**：为空则复用主模型；另含 `max_steps`、`cmd_timeout` 等。
+- **Agent 工具组 `agent.tool_groups`**：逗号分隔，可选 `core/fingerprint/identity/investigation/control`；
+  留空=全启用。不希望 Agent 控制抓包/追踪/进程时，把列表配成不含 `control`（如 `core,fingerprint`）。
 
 ---
 
@@ -80,7 +83,7 @@ python main.py --port 9000     # 指定 Web 端口（默认 8080）
 python main.py --selfcheck     # 环境自检（列出模块开关/tshark/Python 版本后退出）
 python main.py --daemon        # 仅运行持久任务后台守护（无 Web/GUI）
 python main.py --agent "任务"  # 命令行运行 LLM Agent（留空进入交互式）
-python -m unittest discover -s tests -v   # 运行回归测试套件（72 例）
+python -m unittest discover -s tests -v   # 运行回归测试套件（当前 257 例，随轮次增长）
 ```
 
 - **桌面 GUI**：PyQt6 主界面，含托盘图标（关闭/最小化进托盘）、开机自启开关。
@@ -164,7 +167,7 @@ python -m unittest discover -s tests -v   # 运行回归测试套件（72 例）
 ├── ui/                   # UI 层
 │   ├── gui.py            #   MainWindow + launch_gui（页面装配）
 │   ├── gui_common.py     #   QSS 主题/QThread 异步设施/控件工厂/共享助手
-│   ├── pages/            #   每页一文件（overview/screener/tracking/... 共 14 页）
+│   ├── pages/            #   每页一文件（总览 + 13 模块页 + 设置，共 15 页）
 │   ├── web_main.py       #   Web 服务（stdlib http.server + JSON API）
 │   ├── autostart.py      #   开机自启
 │   ├── tray.py           #   托盘图标
@@ -204,10 +207,14 @@ python -m unittest discover -s tests -v   # 运行回归测试套件（72 例）
 
 - 工具仅用于**本地授权软件分析**；抓包、浏览器注入、反编译均带显式开关与审计日志。
 - Web 控制台仅监听 127.0.0.1，写 API 校验自定义头 `X-ReTrace`、Host/Origin、参数白名单与请求体上限。
-- LLM Agent 工具权限分级：只读工具（扫描/分析/逆向）Agent 自主调用，无需请示；
-  读写工具（命令执行/文件删除/回收站移除/指纹修改/联网）一律须用户确认后执行，
-  无人工通道则自动拒绝。所有写改操作含备份→修改→验证→回滚四步，绝不自动执行。
-  仅阻断绕过付费/授权许可的请求。
+- LLM Agent 工具权限分级：只读工具（扫描/分析/逆向/状态查询）Agent 自主调用，无需请示；
+  读写工具（命令执行/文件删除/回收站移除/指纹修改/联网/抓包与追踪与观察器控制/进程启停）
+  一律须用户确认后执行，无人工通道则自动拒绝。所有写改操作含备份→修改→验证→回滚四步，
+  绝不自动执行。仅阻断绕过付费/授权许可的请求。
+- 控制面工具（capture/tracking/watcher/process_control）确定性防线：kill 永拒系统关键进程
+  （smss/csrss/wininit/winlogon/services/lsass 等）与 ReTrace 自身，launch 永拒
+  cmd/powershell 等等价于交出 shell 的程序；read_file 出参统一脱敏，敏感文件类型
+  （config.json/retrace.db/*.pem/*.key 等）直接拒绝，绝不回显明文密钥。
 - 密钥面加固（2026-08-27）：Web/GUI 设置接口对 api_key 只回掩码预览绝不回显明文；
   Agent 审计入库前经 core/redact.py 脱敏（同值同占位、不可还原）；reviewer 对只读
   工具走静态拦截、模型复核仅服务读写级调用。

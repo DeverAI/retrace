@@ -91,8 +91,14 @@ async function run(id, fn, okMsg) {
    ============================================================ */
 function viewTemplate(id, title, tag, iconName, group, builder) {
   const body = view(id, title, tag, iconName, group);
-  const st = status(id, "就绪", "info");
+  // 检修（2026-09-14）：状态条按"短 id"注册——run()/setStatus("pcap") 找的是
+  // "st-pcap"，此前用全 id "st-v_pcap" 建条导致 14/15 个视图状态条整体失灵。
+  const shortId = id.replace(/^v_/, "");
+  const st = status(shortId, "就绪", "info");
   body.appendChild(st);
+  // 特例：个别 run() 用独立状态 id（views_flow.js 的 cfg_ai/db/hunt_refill）
+  const extra = { v_settings: ["cfg_ai", "db"], v_hunt: ["hunt_refill"] }[id] || [];
+  extra.forEach((k) => body.appendChild(status(k, "就绪", "info")));
   const output = el("div", "output-area");
   const log = el("div", "log-area");
   builder({ body, output, log });

@@ -74,8 +74,8 @@ ALLOWED = {
     "tracking.delete_task", "tracking.task_events", "tracking.task_runs",
     "tracking.analyze_task", "tracking.daemon_status", "tracking.capabilities",
     "tracking.audit_entries", "tracking.audit_verify",
-    # M10 agent（任务式 Agent；read/cmd 由独立 reviewer 判定——cmd 被 reviewer
-    # allow 即执行、deny/不可用即拒绝（Web 无人工通道），high 工具无人工确认一律拒绝）
+    # M10 agent（任务式 Agent；read 静态放行，cmd/high 一律需用户确认——Web 无
+    # 人工通道自动拒绝，进度通道是轮询 /api/agent/events）
     "agent.run_task",
     # 配置 / 自启 / 数据库
     "config.switches", "config.set_switches", "config.save_ai", "config.get_ai",

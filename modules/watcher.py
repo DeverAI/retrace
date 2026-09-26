@@ -14,6 +14,7 @@
 """
 import csv
 import io
+import locale
 import os
 import subprocess
 import threading
@@ -22,6 +23,11 @@ import time
 from core import config, db, events, logger
 from modules import regscan
 from modules.tracking import _process_image_path
+
+# 检修（2026-09-14）：tasklist/wmic/netstat/ipconfig 按控制台代码页输出，
+# 强制 utf-8 解码会把中文进程名/"记录名称"表头变成 U+FFFD——DNS 监控维度
+# 整体静默失效、中文 exe 匹配失败（FreqErr §11 同坑）。
+_TOOL_ENC = locale.getpreferredencoding(False) or "utf-8"
 
 SUB_FLAGS = 0
 if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -77,7 +83,7 @@ class Watcher:
         try:
             out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
                                  capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
+                                 encoding=_TOOL_ENC, errors="replace",
                                  creationflags=SUB_FLAGS, timeout=15).stdout
         except (subprocess.SubprocessError, OSError):
             return None
@@ -179,7 +185,7 @@ class Watcher:
         try:
             out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
                                  capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
+                                 encoding=_TOOL_ENC, errors="replace",
                                  creationflags=SUB_FLAGS, timeout=20).stdout
         except (subprocess.SubprocessError, OSError) as e:
             logger.record_err("watcher.tasklist", e)
@@ -205,7 +211,7 @@ class Watcher:
         try:
             out = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,ParentProcessId", "/value"],
-                capture_output=True, text=True, encoding="utf-8",
+                capture_output=True, text=True, encoding=_TOOL_ENC,
                 errors="replace", creationflags=SUB_FLAGS, timeout=15).stdout
         except (subprocess.SubprocessError, OSError) as e:
             logger.record_err("watcher.wmic", e)
@@ -290,7 +296,7 @@ class Watcher:
     def _connections_for(self, pids):
         try:
             out = subprocess.run(["netstat", "-ano"], capture_output=True,
-                                 text=True, encoding="utf-8", errors="replace",
+                                 text=True, encoding=_TOOL_ENC, errors="replace",
                                  creationflags=SUB_FLAGS, timeout=20).stdout
         except (subprocess.SubprocessError, OSError) as e:
             logger.record_err("watcher.netstat", e)
@@ -332,7 +338,7 @@ class Watcher:
         try:
             out = subprocess.run(["ipconfig", "/displaydns"],
                                  capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
+                                 encoding=_TOOL_ENC, errors="replace",
                                  creationflags=SUB_FLAGS, timeout=20).stdout
         except (subprocess.SubprocessError, OSError) as e:
             logger.record_err("watcher.ipconfig", e)
